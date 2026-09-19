@@ -762,7 +762,6 @@ class MediaFetcher(val context: Context) {
             favoritePaths = favoritePaths
         )
         val seenPaths = HashSet<String>()
-        val otgPath = context.config.OTGPath
 
         media.forEach { cachedMedium ->
             val pathKey = cachedMedium.path.lowercase(Locale.getDefault())
@@ -770,39 +769,18 @@ class MediaFetcher(val context: Context) {
                 return@forEach
             }
 
-            val isOnOTG = context.isPathOnOTG(cachedMedium.path)
-            val documentFile = if (isOnOTG) context.getDocumentFile(cachedMedium.path) else null
-            val file = if (documentFile == null) File(cachedMedium.path) else null
-            val exists = if (documentFile != null) {
-                documentFile.exists() && documentFile.isFile
-            } else {
-                context.getDoesFilePathExist(cachedMedium.path, otgPath) && file?.isFile == true
-            }
-            if (!exists) {
-                invalidMedia.add(cachedMedium)
-                return@forEach
-            }
-
-            // A readable zero-byte file is still incomplete, even if MediaStore briefly has a row for it.
-            val actualSize = documentFile?.length() ?: file?.length() ?: 0L
-            if (actualSize <= 0L) {
-                invalidMedia.add(cachedMedium)
-                return@forEach
-            }
-
+            // MediaStore is authoritative for indexed files. Avoid a separate filesystem stat for every
+            // cached item; this is what makes the validated cache fast enough for large libraries.
             val refreshed = if (lookup.indexedPaths.contains(pathKey)) {
                 lookup.mediaByPath[pathKey]
             } else {
+                // Files not indexed by Android and OTG files still need a real filesystem/document check.
                 getMediumFromFile(cachedMedium.path, favoritePaths, cachedMedium)
             }
 
             if (refreshed == null || refreshed.size <= 0L) {
                 invalidMedia.add(cachedMedium)
             } else {
-                val actualModified = documentFile?.lastModified() ?: file?.lastModified() ?: 0L
-                if (refreshed.modified <= 0L) {
-                    refreshed.modified = actualModified
-                }
                 if (refreshed.taken <= 0L) {
                     refreshed.taken = refreshed.modified
                 }

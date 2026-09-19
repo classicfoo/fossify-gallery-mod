@@ -508,7 +508,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     private fun getMediaAdapter() = binding.mediaGrid.adapter as? MediaAdapter
 
-    private fun setupAdapter() {
+    private fun setupAdapter(forceAdapterRefresh: Boolean = false) {
         if (!mShowAll && isDirEmpty()) {
             return
         }
@@ -541,7 +541,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             setupLayoutManager()
             handleGridSpacing()
         } else if (mLastSearchedText.isEmpty()) {
-            (currAdapter as MediaAdapter).updateMedia(mMedia)
+            (currAdapter as MediaAdapter).updateMedia(mMedia, forceAdapterRefresh)
             handleGridSpacing()
         } else {
             searchQueryChanged(mLastSearchedText)
@@ -1223,7 +1223,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         binding.mediaEmptyTextPlaceholder.beVisibleIf(mMedia.isEmpty() && mLoadedInitialPhotos)
         binding.mediaEmptyTextPlaceholder2.beVisibleIf(mMedia.isEmpty() && mLoadedInitialPhotos)
         binding.mediaFastscroller.beVisibleIf(mMedia.isNotEmpty())
-        setupAdapter()
+        setupAdapter(forceAdapterRefresh = true)
 
         if (removedPaths.isNotEmpty() || mediaToAdd.isNotEmpty()) {
             ensureBackgroundThread {

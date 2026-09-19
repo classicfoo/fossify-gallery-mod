@@ -113,7 +113,7 @@ class MediaAdapter(
     private val viewType = config.getFolderViewType(if (config.showAll) SHOW_ALL else path)
     private val isListViewType = viewType == VIEW_TYPE_LIST
     private var rotatedImagePaths = ArrayList<String>()
-    private var currentMediaHash = media.hashCode()
+    private var currentMediaHash = getMediaPresentationHash(media)
     private val hasOTGConnected = activity.hasOTGConnected()
 
     private var scrollHorizontally = config.scrollHorizontally
@@ -612,7 +612,7 @@ class MediaAdapter(
                 listener?.tryDeleteFiles(fileDirItems, skipRecycleBin)
                 listener?.updateMediaGridDecoration(media)
                 removeSelectedItems(positions)
-                currentMediaHash = media.hashCode()
+                currentMediaHash = getMediaPresentationHash(media)
             }
         }
     }
@@ -625,14 +625,36 @@ class MediaAdapter(
 
     private fun getItemWithKey(key: Int): Medium? = media.firstOrNull { (it as? Medium)?.path?.hashCode() == key } as? Medium
 
-    fun updateMedia(newMedia: ArrayList<ThumbnailItem>) {
+    fun updateMedia(newMedia: ArrayList<ThumbnailItem>, forceAdapterRefresh: Boolean = false) {
         val thumbnailItems = newMedia.clone() as ArrayList<ThumbnailItem>
-        if (thumbnailItems.hashCode() != currentMediaHash) {
-            currentMediaHash = thumbnailItems.hashCode()
-            media = thumbnailItems
+        val newMediaHash = getMediaPresentationHash(thumbnailItems)
+        media = thumbnailItems
+        if (forceAdapterRefresh || newMediaHash != currentMediaHash) {
+            currentMediaHash = newMediaHash
             notifyDataSetChanged()
             finishActMode()
         }
+    }
+
+    private fun getMediaPresentationHash(items: List<ThumbnailItem>): Int {
+        var hash = 1
+        items.forEach { item ->
+            val itemHash = when (item) {
+                is ThumbnailSection -> 31 + item.title.hashCode()
+                is Medium -> {
+                    var mediumHash = item.path.hashCode()
+                    mediumHash = 31 * mediumHash + item.type
+                    mediumHash = 31 * mediumHash + item.name.hashCode()
+                    mediumHash = 31 * mediumHash + item.isFavorite.hashCode()
+                    mediumHash = 31 * mediumHash + item.videoDuration
+                    mediumHash
+                }
+
+                else -> item.hashCode()
+            }
+            hash = 31 * hash + itemHash
+        }
+        return hash
     }
 
     fun updateDisplayFilenames(displayFilenames: Boolean) {
