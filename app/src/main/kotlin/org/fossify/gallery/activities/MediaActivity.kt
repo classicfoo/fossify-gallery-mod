@@ -1096,7 +1096,18 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 return@deleteFiles
             }
 
-            mMedia.removeAll { filtered.map { it.path }.contains((it as? Medium)?.path) }
+            val filteredPaths = filtered.mapTo(HashSet()) { it.path }
+            val remainingMedia = mMedia
+                .filterIsInstance<Medium>()
+                .filterNot { filteredPaths.contains(it.path) }
+                .toCollection(ArrayList())
+            val mediaFetcher = MediaFetcher(applicationContext)
+            mMedia = mediaFetcher.groupMedia(remainingMedia, if (mShowAll) SHOW_ALL else mPath)
+
+            runOnUiThread {
+                getMediaAdapter()?.updateMedia(mMedia)
+                handleGridSpacing()
+            }
 
             ensureBackgroundThread {
                 val useRecycleBin = config.useRecycleBin
@@ -1107,10 +1118,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 }
             }
 
-            if (mMedia.isEmpty()) {
+            if (remainingMedia.isEmpty()) {
                 deleteDirectoryIfEmpty()
                 deleteDBDirectory()
-                finish()
+                runOnUiThread { finish() }
             }
         }
     }
