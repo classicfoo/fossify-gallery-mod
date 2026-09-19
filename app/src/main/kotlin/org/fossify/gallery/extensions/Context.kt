@@ -631,6 +631,7 @@ fun Context.loadImage(
             skipMemoryCacheAtPaths = skipMemoryCacheAtPaths,
             animate = animateGifs,
             tryLoadingWithPicasso = type == TYPE_IMAGES && path.isPng(),
+            crossFadeDuration = 0,
             onError = onError
         )
     }
@@ -1037,12 +1038,27 @@ fun Context.getCachedMedia(
     ensureBackgroundThread {
         val mediaFetcher = MediaFetcher(this)
         val foldersToScan = if (path.isEmpty()) {
-            mediaFetcher.getFoldersToScan()
+            // Cache display must not rediscover the library through MediaStore first.
+            ArrayList<String>()
         } else {
             arrayListOf(path)
         }
 
         var media = ArrayList<Medium>()
+        if (path.isEmpty()) {
+            val cachedLibrary = mediaDB.getCachedLibrary()
+            val excluded = if (config.temporarilyShowExcluded) HashSet() else config.excludedFolders
+            val included = config.includedFolders
+            val statuses = HashMap<String, Boolean>()
+            val showHidden = config.shouldShowHidden
+            // Evaluate folder visibility once per folder, not once per photograph.
+            val visibleFolders = cachedLibrary.map { it.parentPath }.distinct().filter { folder ->
+                !config.isFolderProtected(folder) && folder.shouldFolderBeVisible(
+                    excluded, included, showHidden, statuses
+                ) { checkedPath, hidden -> statuses[checkedPath] = hidden }
+            }.toHashSet()
+            media.addAll(cachedLibrary.filter { it.parentPath in visibleFolders })
+        }
         if (path == FAVORITES) {
             media.addAll(mediaDB.getFavorites())
         }
@@ -1072,7 +1088,7 @@ fun Context.getCachedMedia(
         }
 
         val favoritePaths = getFavoritePaths()
-        val validation = mediaFetcher.validateCachedMedia(media, favoritePaths)
+        val validation = mediaFetcher.validateStartupCache(media, favoritePaths)
         media = validation.validMedia
 
         if (path == FAVORITES) {
@@ -1102,7 +1118,8 @@ fun Context.getCachedMedia(
         val grouped = mediaFetcher.groupMedia(media, pathToUse)
         callback(grouped.clone() as ArrayList<ThumbnailItem>)
 
-        // Persist refreshed rows and remove invalid rows after the validated cache is visible.
+        // Only remove missing rows here. The authoritative scan persists fresh metadata;
+        // writing the startup snapshot back could overwrite it if cache loading finishes later.
         Thread {
             try {
                 validation.invalidMedia.forEach { invalidMedium ->
@@ -1116,10 +1133,6 @@ fun Context.getCachedMedia(
                     }
                 }
 
-                val mediaToPersist = validation.validMedia.filter { it.deletedTS == 0L }
-                if (mediaToPersist.isNotEmpty()) {
-                    mediaDB.insertAll(mediaToPersist)
-                }
             } catch (ignored: Exception) {
             }
         }.start()

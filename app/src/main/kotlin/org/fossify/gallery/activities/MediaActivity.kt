@@ -19,7 +19,6 @@ import com.bumptech.glide.request.transition.Transition
 import org.fossify.commons.dialogs.CreateNewFolderDialog
 import org.fossify.commons.dialogs.RadioGroupDialog
 import org.fossify.commons.extensions.appLockManager
-import org.fossify.commons.extensions.areSystemAnimationsEnabled
 import org.fossify.commons.extensions.beGone
 import org.fossify.commons.extensions.beVisible
 import org.fossify.commons.extensions.beVisibleIf
@@ -521,6 +520,8 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
         val currAdapter = binding.mediaGrid.adapter
         if (currAdapter == null) {
+            // Reconciliation updates individual cells; change animations otherwise flash thumbnails.
+            binding.mediaGrid.itemAnimator = null
             initZoomListener()
             MediaAdapter(
                 activity = this,
@@ -537,11 +538,6 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             }.apply {
                 setupZoomListener(mZoomListener)
                 binding.mediaGrid.adapter = this
-            }
-
-            val viewType = config.getFolderViewType(if (mShowAll) SHOW_ALL else mPath)
-            if (viewType == VIEW_TYPE_LIST && areSystemAnimationsEnabled) {
-                binding.mediaGrid.scheduleLayoutAnimation()
             }
 
             setupLayoutManager()
@@ -679,6 +675,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
         mIsGettingMedia = true
         val loadGeneration = ++mMediaLoadGeneration
+        startAsyncTask(loadGeneration)
         if (!mLoadedInitialPhotos) {
             getCachedMedia(
                 mPath,
@@ -699,7 +696,6 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
         // Never make the authoritative scan wait for cache validation. A slow or failed cache
         // lookup must not leave the gallery behind a permanent loading indicator.
-        startAsyncTask(loadGeneration)
         mLoadedInitialPhotos = true
     }
 
@@ -721,7 +717,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                     }
 
                     // remove cached files that are no longer valid for whatever reason
-                    val newPaths = newMedia.mapNotNull { it as? Medium }.map { it.path }
+                    val newPaths = newMedia.mapNotNull { it as? Medium }.mapTo(HashSet()) { it.path }
                     oldMedia
                         .mapNotNull { it as? Medium }
                         .filter { !newPaths.contains(it.path) }

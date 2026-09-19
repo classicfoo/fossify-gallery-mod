@@ -11,6 +11,7 @@ import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.view.allViews
+import androidx.recyclerview.widget.DiffUtil
 import com.bumptech.glide.Glide
 import com.qtalk.recyclerviewfastscroller.RecyclerViewFastScroller
 import org.fossify.commons.activities.BaseSimpleActivity
@@ -113,7 +114,6 @@ class MediaAdapter(
     private val viewType = config.getFolderViewType(if (config.showAll) SHOW_ALL else path)
     private val isListViewType = viewType == VIEW_TYPE_LIST
     private var rotatedImagePaths = ArrayList<String>()
-    private var currentMediaHash = getMediaPresentationHash(media)
     private val hasOTGConnected = activity.hasOTGConnected()
 
     private var scrollHorizontally = config.scrollHorizontally
@@ -612,7 +612,6 @@ class MediaAdapter(
                 listener?.tryDeleteFiles(fileDirItems, skipRecycleBin)
                 listener?.updateMediaGridDecoration(media)
                 removeSelectedItems(positions)
-                currentMediaHash = getMediaPresentationHash(media)
             }
         }
     }
@@ -626,35 +625,33 @@ class MediaAdapter(
     private fun getItemWithKey(key: Int): Medium? = media.firstOrNull { (it as? Medium)?.path?.hashCode() == key } as? Medium
 
     fun updateMedia(newMedia: ArrayList<ThumbnailItem>, forceAdapterRefresh: Boolean = false) {
-        val thumbnailItems = newMedia.clone() as ArrayList<ThumbnailItem>
-        val newMediaHash = getMediaPresentationHash(thumbnailItems)
-        media = thumbnailItems
-        if (forceAdapterRefresh || newMediaHash != currentMediaHash) {
-            currentMediaHash = newMediaHash
-            notifyDataSetChanged()
-            finishActMode()
-        }
-    }
-
-    private fun getMediaPresentationHash(items: List<ThumbnailItem>): Int {
-        var hash = 1
-        items.forEach { item ->
-            val itemHash = when (item) {
-                is ThumbnailSection -> 31 + item.title.hashCode()
-                is Medium -> {
-                    var mediumHash = item.path.hashCode()
-                    mediumHash = 31 * mediumHash + item.type
-                    mediumHash = 31 * mediumHash + item.name.hashCode()
-                    mediumHash = 31 * mediumHash + item.isFavorite.hashCode()
-                    mediumHash = 31 * mediumHash + item.videoDuration
-                    mediumHash
+        val previous = media
+        val next = ArrayList(newMedia)
+        val changes = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize() = previous.size
+            override fun getNewListSize() = next.size
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val old = previous[oldItemPosition]
+                val new = next[newItemPosition]
+                return when {
+                    old is Medium && new is Medium -> old.path == new.path && old.type == new.type
+                    old is ThumbnailSection && new is ThumbnailSection -> old.title == new.title
+                    else -> false
                 }
-
-                else -> item.hashCode()
             }
-            hash = 31 * hash + itemHash
-        }
-        return hash
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val old = previous[oldItemPosition]
+                val new = next[newItemPosition]
+                return if (old is Medium && new is Medium) {
+                    old.name == new.name && old.isFavorite == new.isFavorite &&
+                        old.videoDuration == new.videoDuration && old.size == new.size &&
+                        old.modified == new.modified &&
+                        !(forceAdapterRefresh && new.path in rotatedImagePaths)
+                } else old == new
+            }
+        }, false)
+        media = next
+        changes.dispatchUpdatesTo(this)
     }
 
     fun updateDisplayFilenames(displayFilenames: Boolean) {
