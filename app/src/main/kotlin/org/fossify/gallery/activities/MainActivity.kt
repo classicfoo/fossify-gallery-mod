@@ -1730,6 +1730,10 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         getDirectories()
     }
 
+    override fun onMediaStoreChanged() {
+        refreshItems()
+    }
+
     override fun recheckPinnedFolders() {
         ensureBackgroundThread {
             gotDirectories(movePinnedDirectoriesToFront(getCurrentlyDisplayedDirs()))

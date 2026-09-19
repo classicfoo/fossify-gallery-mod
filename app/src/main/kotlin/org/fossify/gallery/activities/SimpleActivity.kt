@@ -2,6 +2,8 @@ package org.fossify.gallery.activities
 
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore.Images
 import android.provider.MediaStore.Video
 import android.view.WindowManager
@@ -20,17 +22,35 @@ import org.fossify.gallery.helpers.getPermissionsToRequest
 
 open class SimpleActivity : BaseSimpleActivity() {
 
-    private var dialog: AlertDialog? = null
+    companion object {
+        private const val MEDIA_REFRESH_DEBOUNCE = 500L
+    }
 
-    private val observer = object : ContentObserver(null) {
+    private var dialog: AlertDialog? = null
+    private var isActivityResumed = false
+    private val mediaRefreshHandler = Handler(Looper.getMainLooper())
+    private val mediaRefreshRunnable = Runnable {
+        if (isActivityResumed && !isFinishing && !isDestroyed) {
+            onMediaStoreChanged()
+        }
+    }
+
+    private val observer = object : ContentObserver(mediaRefreshHandler) {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             super.onChange(selfChange, uri)
-            if (uri != null) {
-                val path = getRealPathFromURI(uri)
-                if (path != null) {
-                    updateDirectoryPath(path.getParentPath())
-                    addPathToDB(path)
+            ensureBackgroundThread {
+                if (uri != null) {
+                    val path = getRealPathFromURI(uri)
+                    if (path != null) {
+                        updateDirectoryPath(path.getParentPath())
+                        addPathToDB(path)
+                    }
                 }
+            }
+
+            if (isActivityResumed) {
+                mediaRefreshHandler.removeCallbacks(mediaRefreshRunnable)
+                mediaRefreshHandler.postDelayed(mediaRefreshRunnable, MEDIA_REFRESH_DEBOUNCE)
             }
         }
     }
@@ -60,6 +80,25 @@ open class SimpleActivity : BaseSimpleActivity() {
     override fun getAppLauncherName() = getString(R.string.app_launcher_name)
 
     override fun getRepositoryName() = "Gallery"
+
+    override fun onResume() {
+        super.onResume()
+        isActivityResumed = true
+    }
+
+    override fun onPause() {
+        isActivityResumed = false
+        mediaRefreshHandler.removeCallbacks(mediaRefreshRunnable)
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        mediaRefreshHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    protected open fun onMediaStoreChanged() {
+    }
 
     protected fun checkNotchSupport() {
         if (isPiePlus()) {

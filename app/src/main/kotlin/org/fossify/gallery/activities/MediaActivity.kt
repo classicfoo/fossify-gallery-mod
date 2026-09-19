@@ -180,9 +180,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             padBottomImeAndSystem = listOf(binding.mediaGrid)
         )
 
-        if (mShowAll) {
-            registerFileUpdateListener()
-        }
+        registerFileUpdateListener()
 
         binding.mediaEmptyTextPlaceholder2.setOnClickListener {
             showFilterMediaDialog()
@@ -1103,6 +1101,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun refreshItems() {
         getMedia()
+    }
+
+    override fun onMediaStoreChanged() {
+        refreshItems()
     }
 
     override fun selectedPaths(paths: ArrayList<String>) {
