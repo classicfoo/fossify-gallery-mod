@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.MediaStore.Images
 import android.provider.MediaStore.Video
@@ -185,6 +186,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
     private var mTimeFormat = ""
     private var mLastMediaHandler = Handler()
     private var mTempShowHiddenHandler = Handler()
+    private val mDirectoryReconciliationHandler = Handler(Looper.getMainLooper())
     private var mZoomListener: MyRecyclerView.MyZoomListener? = null
     private var mLastMediaFetcher: MediaFetcher? = null
     private var mDirs = ArrayList<Directory>()
@@ -353,6 +355,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
 
     override fun onPause() {
         super.onPause()
+        mDirectoryReconciliationHandler.removeCallbacksAndMessages(null)
         binding.directoriesRefreshLayout.isRefreshing = false
         mIsGettingDirs = false
         storeStateVariables()
@@ -376,6 +379,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        mDirectoryReconciliationHandler.removeCallbacksAndMessages(null)
         if (!isChangingConfigurations) {
             config.temporarilyShowHidden = false
             config.temporarilyShowExcluded = false
@@ -1730,8 +1734,31 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
         getDirectories()
     }
 
-    override fun onMediaStoreChanged() {
-        refreshItems()
+    override fun onMediaStoreChanged(changedUris: List<Uri>, hasUnknownChange: Boolean) {
+        refreshCachedDirectories()
+        mDirectoryReconciliationHandler.removeCallbacksAndMessages(null)
+        mDirectoryReconciliationHandler.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                getDirectories()
+            }
+        }, if (hasUnknownChange || changedUris.isEmpty()) 200L else 1000L)
+    }
+
+    private fun refreshCachedDirectories() {
+        val getImages = mIsPickImageIntent || mIsGetImageContentIntent
+        val getVideos = mIsPickVideoIntent || mIsGetVideoContentIntent
+        getCachedDirectories(getVideos && !getImages, getImages && !getVideos) {
+            val dirs = getSortedDirectories(addTempFolderIfNeeded(it))
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    return@runOnUiThread
+                }
+
+                mDirs = dirs.clone() as ArrayList<Directory>
+                checkPlaceholderVisibility(dirs)
+                setupAdapter(dirs)
+            }
+        }
     }
 
     override fun recheckPinnedFolders() {

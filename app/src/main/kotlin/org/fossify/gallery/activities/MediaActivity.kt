@@ -3,8 +3,10 @@ package org.fossify.gallery.activities
 import android.app.WallpaperManager
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.widget.RelativeLayout
 import androidx.core.net.toUri
@@ -29,6 +31,7 @@ import org.fossify.commons.extensions.getLatestMediaByDateId
 import org.fossify.commons.extensions.getLatestMediaId
 import org.fossify.commons.extensions.getProperPrimaryColor
 import org.fossify.commons.extensions.getProperTextColor
+import org.fossify.commons.extensions.getRealPathFromURI
 import org.fossify.commons.extensions.getTimeFormat
 import org.fossify.commons.extensions.handleHiddenFolderPasswordProtection
 import org.fossify.commons.extensions.handleLockedFolderOpening
@@ -45,6 +48,7 @@ import org.fossify.commons.extensions.viewBinding
 import org.fossify.commons.helpers.FAVORITES
 import org.fossify.commons.helpers.IS_FROM_GALLERY
 import org.fossify.commons.helpers.REQUEST_EDIT_IMAGE
+import org.fossify.commons.helpers.SORT_BY_DATE_TAKEN
 import org.fossify.commons.helpers.SORT_BY_RANDOM
 import org.fossify.commons.helpers.VIEW_TYPE_GRID
 import org.fossify.commons.helpers.VIEW_TYPE_LIST
@@ -71,6 +75,7 @@ import org.fossify.gallery.extensions.emptyAndDisableTheRecycleBin
 import org.fossify.gallery.extensions.emptyTheRecycleBin
 import org.fossify.gallery.extensions.favoritesDB
 import org.fossify.gallery.extensions.getCachedMedia
+import org.fossify.gallery.extensions.getFavoritePaths
 import org.fossify.gallery.extensions.getHumanizedFilename
 import org.fossify.gallery.extensions.isDownloadsFolder
 import org.fossify.gallery.extensions.launchAbout
@@ -90,6 +95,8 @@ import org.fossify.gallery.helpers.DIRECTORY
 import org.fossify.gallery.helpers.GET_ANY_INTENT
 import org.fossify.gallery.helpers.GET_IMAGE_INTENT
 import org.fossify.gallery.helpers.GET_VIDEO_INTENT
+import org.fossify.gallery.helpers.GROUP_BY_DATE_TAKEN_DAILY
+import org.fossify.gallery.helpers.GROUP_BY_DATE_TAKEN_MONTHLY
 import org.fossify.gallery.helpers.GridSpacingItemDecoration
 import org.fossify.gallery.helpers.IS_IN_RECYCLE_BIN
 import org.fossify.gallery.helpers.MAX_COLUMN_COUNT
@@ -133,6 +140,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private var mLatestMediaDateId = 0L
     private var mLastMediaHandler = Handler()
     private var mTempShowHiddenHandler = Handler()
+    private val mMediaReconciliationHandler = Handler(Looper.getMainLooper())
     private var mCurrAsyncTask: GetMediaAsynctask? = null
     private var mZoomListener: MyRecyclerView.MyZoomListener? = null
 
@@ -151,6 +159,12 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     companion object {
         var mMedia = ArrayList<ThumbnailItem>()
     }
+
+    private data class FastMediaChanges(
+        val media: ArrayList<Medium>,
+        val changedPaths: HashSet<String>,
+        val changedMediaStoreIds: HashSet<Long>
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -266,6 +280,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun onPause() {
         super.onPause()
+        mMediaReconciliationHandler.removeCallbacksAndMessages(null)
         mIsGettingMedia = false
         binding.mediaRefreshLayout.isRefreshing = false
         storeStateVariables()
@@ -292,6 +307,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        mMediaReconciliationHandler.removeCallbacksAndMessages(null)
         if (config.showAll && !isChangingConfigurations) {
             config.temporarilyShowHidden = false
             config.tempSkipDeleteConfirmation = false
@@ -1103,8 +1119,147 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         getMedia()
     }
 
-    override fun onMediaStoreChanged() {
-        refreshItems()
+    override fun onMediaStoreChanged(changedUris: List<Uri>, hasUnknownChange: Boolean) {
+        val distinctUris = changedUris.distinct()
+        if (distinctUris.isEmpty()) {
+            scheduleMediaReconciliation(200L)
+            return
+        }
+
+        ensureBackgroundThread {
+            val changedPaths = HashSet<String>()
+            distinctUris.forEach { uri ->
+                try {
+                    getRealPathFromURI(uri)?.let { changedPaths.add(it) }
+                } catch (ignored: Exception) {
+                }
+            }
+
+            val changedMediaStoreIds = distinctUris.mapNotNull {
+                it.lastPathSegment?.toLongOrNull()
+            }.toHashSet()
+            val pathToUse = if (mShowAll) SHOW_ALL else mPath
+            val folderSorting = config.getFolderSorting(pathToUse)
+            val folderGrouping = config.getFolderGrouping(pathToUse)
+            val getProperDateTaken = folderSorting and SORT_BY_DATE_TAKEN != 0
+                    || folderGrouping and GROUP_BY_DATE_TAKEN_DAILY != 0
+                    || folderGrouping and GROUP_BY_DATE_TAKEN_MONTHLY != 0
+            val media = MediaFetcher(applicationContext).getMediaFromUris(
+                uris = distinctUris,
+                isPickImage = mIsGetImageIntent && !mIsGetVideoIntent,
+                isPickVideo = mIsGetVideoIntent && !mIsGetImageIntent,
+                favoritePaths = getFavoritePaths(),
+                getProperDateTaken = getProperDateTaken,
+                dateTakens = HashMap()
+            )
+            val mediaStoreIds = media.mapNotNull { it.mediaStoreId.takeIf { id -> id != 0L } }.toHashSet()
+            val hasUnresolvedUris = distinctUris.any { uri ->
+                val id = uri.lastPathSegment?.toLongOrNull()
+                id == null || !mediaStoreIds.contains(id)
+            }
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    return@runOnUiThread
+                }
+
+                applyFastMediaChanges(
+                    FastMediaChanges(
+                        media = media,
+                        changedPaths = changedPaths,
+                        changedMediaStoreIds = changedMediaStoreIds
+                    )
+                )
+
+                val reconciliationDelay = if (hasUnknownChange || hasUnresolvedUris) 200L else 1000L
+                scheduleMediaReconciliation(reconciliationDelay)
+            }
+        }
+    }
+
+    private fun applyFastMediaChanges(changes: FastMediaChanges) {
+        val replacementPaths = changes.media.mapTo(HashSet()) { it.path }
+        val replacementIds = changes.media.mapNotNull {
+            it.mediaStoreId.takeIf { id -> id != 0L }
+        }.toHashSet()
+        val removedPaths = HashSet<String>()
+        val currentMedia = ArrayList(mMedia
+            .filterIsInstance<Medium>()
+            .filter { medium ->
+                val shouldRemove = medium.path in changes.changedPaths
+                        || medium.path in replacementPaths
+                        || (medium.mediaStoreId != 0L && changes.changedMediaStoreIds.contains(medium.mediaStoreId))
+                        || (medium.mediaStoreId != 0L && replacementIds.contains(medium.mediaStoreId))
+                if (shouldRemove) {
+                    removedPaths.add(medium.path)
+                }
+                !shouldRemove
+            }
+        )
+
+        val mediaToAdd = changes.media.filter { shouldShowFastMedia(it) }
+        val existingPaths = currentMedia.mapTo(HashSet()) { it.path }
+        mediaToAdd.forEach { medium ->
+            if (existingPaths.add(medium.path)) {
+                currentMedia.add(medium)
+            }
+        }
+
+        val mediaFetcher = MediaFetcher(applicationContext)
+        mediaFetcher.sortMedia(currentMedia, config.getFolderSorting(if (mShowAll) SHOW_ALL else mPath))
+        mMedia = mediaFetcher.groupMedia(currentMedia, if (mShowAll) SHOW_ALL else mPath)
+
+        binding.mediaEmptyTextPlaceholder.beVisibleIf(mMedia.isEmpty() && mLoadedInitialPhotos)
+        binding.mediaEmptyTextPlaceholder2.beVisibleIf(mMedia.isEmpty() && mLoadedInitialPhotos)
+        binding.mediaFastscroller.beVisibleIf(mMedia.isNotEmpty())
+        setupAdapter()
+
+        if (removedPaths.isNotEmpty() || mediaToAdd.isNotEmpty()) {
+            ensureBackgroundThread {
+                try {
+                    removedPaths.forEach { mediaDB.deleteMediumPath(it) }
+                    if (mediaToAdd.isNotEmpty()) {
+                        mediaDB.insertAll(mediaToAdd)
+                    }
+                } catch (ignored: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun shouldShowFastMedia(medium: Medium): Boolean {
+        if (mPath == RECYCLE_BIN || medium.path.startsWith(recycleBinPath)) {
+            return false
+        }
+
+        if (mPath == FAVORITES) {
+            return medium.isFavorite
+        }
+
+        if (!mShowAll) {
+            return medium.parentPath.equals(mPath, true)
+        }
+
+        if (!config.temporarilyShowExcluded && config.excludedFolders.any {
+                medium.path == it || medium.path.startsWith("$it/")
+            }) {
+            return false
+        }
+
+        return !config.isFolderProtected(medium.parentPath)
+    }
+
+    private fun scheduleMediaReconciliation(delay: Long) {
+        mMediaReconciliationHandler.removeCallbacksAndMessages(null)
+        mMediaReconciliationHandler.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                if (mIsGettingMedia) {
+                    scheduleMediaReconciliation(250L)
+                } else {
+                    getMedia()
+                }
+            }
+        }, delay)
     }
 
     override fun selectedPaths(paths: ArrayList<String>) {

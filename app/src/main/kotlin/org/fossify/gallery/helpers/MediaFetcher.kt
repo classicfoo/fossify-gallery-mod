@@ -538,6 +538,142 @@ class MediaFetcher(val context: Context) {
         return media
     }
 
+    fun getMediaFromUris(
+        uris: List<Uri>,
+        isPickImage: Boolean,
+        isPickVideo: Boolean,
+        favoritePaths: ArrayList<String>,
+        getProperDateTaken: Boolean,
+        dateTakens: HashMap<String, Long>
+    ): ArrayList<Medium> {
+        val media = ArrayList<Medium>()
+        if (context.config.filterMedia == 0) {
+            return media
+        }
+
+        val projection = arrayOf(
+            Images.Media._ID,
+            Images.Media.DISPLAY_NAME,
+            Images.Media.DATA,
+            Images.Media.DATE_MODIFIED,
+            Images.Media.DATE_TAKEN,
+            Images.Media.SIZE,
+            MediaStore.MediaColumns.DURATION
+        )
+
+        for (uri in uris.distinct()) {
+            if (shouldStop || uri.lastPathSegment?.toLongOrNull() == null) {
+                continue
+            }
+
+            try {
+                context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        getMediumFromCursor(
+                            cursor = cursor,
+                            isPickImage = isPickImage,
+                            isPickVideo = isPickVideo,
+                            favoritePaths = favoritePaths,
+                            getProperDateTaken = getProperDateTaken,
+                            dateTakens = dateTakens
+                        )?.let { medium ->
+                            media.add(medium)
+                        }
+                    }
+                }
+            } catch (ignored: Exception) {
+            }
+        }
+
+        return media
+    }
+
+    private fun getMediumFromCursor(
+        cursor: Cursor,
+        isPickImage: Boolean,
+        isPickVideo: Boolean,
+        favoritePaths: ArrayList<String>,
+        getProperDateTaken: Boolean,
+        dateTakens: HashMap<String, Long>
+    ): Medium? {
+        val filterMedia = context.config.filterMedia
+        val mediaStoreId = cursor.getLongValue(Images.Media._ID)
+        val filename = cursor.getStringValue(Images.Media.DISPLAY_NAME) ?: return null
+        val path = cursor.getStringValue(Images.Media.DATA) ?: return null
+        val isImage = path.isImageFast()
+        val isVideo = if (isImage) false else path.isVideoFast()
+        val isGif = if (isImage || isVideo) false else path.isGif()
+        val isRaw = if (isImage || isVideo || isGif) false else path.isRawFast()
+        val isSvg = if (isImage || isVideo || isGif || isRaw) false else path.isSvg()
+
+        if (!isImage && !isVideo && !isGif && !isRaw && !isSvg) {
+            return null
+        }
+
+        if (isVideo && (isPickImage || filterMedia and TYPE_VIDEOS == 0)) {
+            return null
+        }
+
+        if (isImage && (isPickVideo || filterMedia and TYPE_IMAGES == 0)) {
+            return null
+        }
+
+        if (isGif && filterMedia and TYPE_GIFS == 0) {
+            return null
+        }
+
+        if (isRaw && filterMedia and TYPE_RAWS == 0) {
+            return null
+        }
+
+        if (isSvg && filterMedia and TYPE_SVGS == 0) {
+            return null
+        }
+
+        if (!context.config.shouldShowHidden && filename.startsWith('.')) {
+            return null
+        }
+
+        val size = cursor.getLongValue(Images.Media.SIZE)
+        if (size <= 0L) {
+            return null
+        }
+
+        val type = when {
+            isVideo -> TYPE_VIDEOS
+            isGif -> TYPE_GIFS
+            isRaw -> TYPE_RAWS
+            isSvg -> TYPE_SVGS
+            else -> TYPE_IMAGES
+        }
+
+        val lastModified = cursor.getLongValue(Images.Media.DATE_MODIFIED) * 1000
+        var dateTaken = cursor.getLongValue(Images.Media.DATE_TAKEN)
+        if (getProperDateTaken) {
+            dateTaken = dateTakens.remove(path) ?: dateTaken.takeIf { it != 0L } ?: lastModified
+        }
+        if (dateTaken == 0L) {
+            dateTaken = lastModified
+        }
+
+        val videoDuration = Math.round(cursor.getIntValue(MediaStore.MediaColumns.DURATION) / 1000.toDouble()).toInt()
+        val isFavorite = favoritePaths.contains(path)
+        return Medium(
+            null,
+            filename,
+            path,
+            path.getParentPath(),
+            lastModified,
+            dateTaken,
+            size,
+            type,
+            videoDuration,
+            isFavorite,
+            0L,
+            mediaStoreId
+        )
+    }
+
     private fun getMediaOnOTG(
         folder: String, isPickImage: Boolean, isPickVideo: Boolean, filterMedia: Int, favoritePaths: ArrayList<String>,
         getVideoDurations: Boolean

@@ -23,21 +23,37 @@ import org.fossify.gallery.helpers.getPermissionsToRequest
 open class SimpleActivity : BaseSimpleActivity() {
 
     companion object {
-        private const val MEDIA_REFRESH_DEBOUNCE = 500L
+        private const val MEDIA_REFRESH_DEBOUNCE = 100L
     }
 
     private var dialog: AlertDialog? = null
     private var isActivityResumed = false
+    private val pendingMediaUris = LinkedHashSet<Uri>()
+    private var hasPendingUnknownMediaChange = false
     private val mediaRefreshHandler = Handler(Looper.getMainLooper())
     private val mediaRefreshRunnable = Runnable {
-        if (isActivityResumed && !isFinishing && !isDestroyed) {
-            onMediaStoreChanged()
+        if (!isActivityResumed || isFinishing || isDestroyed) {
+            return@Runnable
+        }
+
+        val changedUris = pendingMediaUris.toList()
+        pendingMediaUris.clear()
+        val hasUnknownChange = hasPendingUnknownMediaChange
+        hasPendingUnknownMediaChange = false
+        if (changedUris.isNotEmpty() || hasUnknownChange) {
+            onMediaStoreChanged(changedUris, hasUnknownChange)
         }
     }
 
     private val observer = object : ContentObserver(mediaRefreshHandler) {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             super.onChange(selfChange, uri)
+            if (uri == null) {
+                hasPendingUnknownMediaChange = true
+            } else {
+                pendingMediaUris.add(uri)
+            }
+
             ensureBackgroundThread {
                 if (uri != null) {
                     val path = getRealPathFromURI(uri)
@@ -53,6 +69,11 @@ open class SimpleActivity : BaseSimpleActivity() {
                 mediaRefreshHandler.postDelayed(mediaRefreshRunnable, MEDIA_REFRESH_DEBOUNCE)
             }
         }
+    }
+
+    private fun dispatchPendingMediaChanges() {
+        mediaRefreshHandler.removeCallbacks(mediaRefreshRunnable)
+        mediaRefreshHandler.post(mediaRefreshRunnable)
     }
 
     override fun getAppIconIDs() = arrayListOf(
@@ -84,6 +105,7 @@ open class SimpleActivity : BaseSimpleActivity() {
     override fun onResume() {
         super.onResume()
         isActivityResumed = true
+        dispatchPendingMediaChanges()
     }
 
     override fun onPause() {
@@ -94,10 +116,12 @@ open class SimpleActivity : BaseSimpleActivity() {
 
     override fun onDestroy() {
         mediaRefreshHandler.removeCallbacksAndMessages(null)
+        pendingMediaUris.clear()
+        hasPendingUnknownMediaChange = false
         super.onDestroy()
     }
 
-    protected open fun onMediaStoreChanged() {
+    protected open fun onMediaStoreChanged(changedUris: List<Uri>, hasUnknownChange: Boolean) {
     }
 
     protected fun checkNotchSupport() {
