@@ -38,7 +38,6 @@ import com.squareup.picasso.Picasso
 import org.fossify.commons.extensions.doesThisOrParentHaveNoMedia
 import org.fossify.commons.extensions.getDocumentFile
 import org.fossify.commons.extensions.getDoesFilePathExist
-import org.fossify.commons.extensions.getDuration
 import org.fossify.commons.extensions.getFilenameFromPath
 import org.fossify.commons.extensions.getLongValue
 import org.fossify.commons.extensions.getMimeTypeFromUri
@@ -48,6 +47,7 @@ import org.fossify.commons.extensions.getStringValue
 import org.fossify.commons.extensions.humanizePath
 import org.fossify.commons.extensions.internalStoragePath
 import org.fossify.commons.extensions.isGif
+import org.fossify.commons.extensions.isImageFast
 import org.fossify.commons.extensions.isPathOnOTG
 import org.fossify.commons.extensions.isPathOnSD
 import org.fossify.commons.extensions.isPng
@@ -829,6 +829,84 @@ fun Context.tryLoadingWithPicasso(
     }
 }
 
+private fun isCachedDirectoryMediaAllowed(
+    path: String,
+    filterMedia: Int,
+    getVideosOnly: Boolean,
+    getImagesOnly: Boolean
+): Boolean {
+    val isImage = path.isImageFast()
+    val isVideo = if (isImage) false else path.isVideoFast()
+    val isGif = if (isImage || isVideo) false else path.isGif()
+    val isRaw = if (isImage || isVideo || isGif) false else path.isRawFast()
+    val isSvg = if (isImage || isVideo || isGif || isRaw) false else path.isSvg()
+
+    if (getVideosOnly) {
+        return isVideo
+    }
+
+    if (getImagesOnly) {
+        return isImage
+    }
+
+    return when {
+        isImage -> filterMedia and TYPE_IMAGES != 0
+        isVideo -> filterMedia and TYPE_VIDEOS != 0
+        isGif -> filterMedia and TYPE_GIFS != 0
+        isRaw -> filterMedia and TYPE_RAWS != 0
+        isSvg -> filterMedia and TYPE_SVGS != 0
+        else -> false
+    }
+}
+
+private fun Context.hasCurrentMediaInCachedDirectory(
+    path: String,
+    currentMediaFolders: HashSet<String>,
+    getVideosOnly: Boolean,
+    getImagesOnly: Boolean,
+    forceShowHidden: Boolean
+): Boolean? {
+    if (currentMediaFolders.contains(path.lowercase(Locale.getDefault()))) {
+        return true
+    }
+
+    if (!getDoesFilePathExist(path, config.OTGPath)) {
+        return false
+    }
+
+    val filterMedia = config.filterMedia
+    if (isPathOnOTG(path)) {
+        val children = getDocumentFile(path)?.listFiles() ?: return null
+        return children.any { child ->
+            val filename = child.name ?: return@any false
+            if (!config.shouldShowHidden && !forceShowHidden && filename.startsWith('.')) {
+                return@any false
+            }
+
+            if (child.isDirectory) {
+                return@any filterMedia and TYPE_PORTRAITS != 0 && filename.startsWith("img_", true)
+            }
+
+            val childPath = "$path/$filename"
+            child.length() > 0L && isCachedDirectoryMediaAllowed(childPath, filterMedia, getVideosOnly, getImagesOnly)
+        }
+    }
+
+    val children = File(path).listFiles() ?: return null
+    return children.any { child ->
+        val filename = child.name
+        if (!config.shouldShowHidden && !forceShowHidden && filename.startsWith('.')) {
+            return@any false
+        }
+
+        if (child.isDirectory) {
+            return@any filterMedia and TYPE_PORTRAITS != 0 && filename.startsWith("img_", true)
+        }
+
+        child.length() > 0L && isCachedDirectoryMediaAllowed(child.absolutePath, filterMedia, getVideosOnly, getImagesOnly)
+    }
+}
+
 fun Context.getCachedDirectories(
     getVideosOnly: Boolean = false,
     getImagesOnly: Boolean = false,
@@ -851,6 +929,27 @@ fun Context.getCachedDirectories(
         if (!config.showRecycleBinAtFolders) {
             directories.removeAll { it.isRecycleBin() }
         }
+
+        val currentMediaFolders = MediaFetcher(this).getCurrentMediaFolderPaths(
+            isPickImage = getImagesOnly,
+            isPickVideo = getVideosOnly,
+            forceShowHidden = forceShowHidden
+        )
+        val temporaryFolderPath = config.tempFolderPath
+        val invalidDirectoryPaths = directories.filter { directory ->
+            when {
+                directory.areFavorites() || directory.isRecycleBin() || directory.path == temporaryFolderPath -> false
+                else -> hasCurrentMediaInCachedDirectory(
+                    path = directory.path,
+                    currentMediaFolders = currentMediaFolders,
+                    getVideosOnly = getVideosOnly,
+                    getImagesOnly = getImagesOnly,
+                    forceShowHidden = forceShowHidden
+                ) == false
+            }
+        }.mapTo(HashSet()) { it.path.lowercase(Locale.getDefault()) }
+
+        directories.removeAll { invalidDirectoryPaths.contains(it.path.lowercase(Locale.getDefault())) }
 
         val shouldShowHidden = config.shouldShowHidden || forceShowHidden
         val excludedPaths = if (config.temporarilyShowExcluded || forceShowExcluded) {
@@ -915,7 +1014,17 @@ fun Context.getCachedDirectories(
 
         val clone = filteredDirectories.clone() as ArrayList<Directory>
         callback(clone.distinctBy { it.path.getDistinctPath() } as ArrayList<Directory>)
-        removeInvalidDBDirectories(filteredDirectories)
+
+        // Do not block the validated cache callback on database cleanup.
+        Thread {
+            try {
+                invalidDirectoryPaths.forEach { path ->
+                    directoryDB.deleteDirPath(path)
+                }
+                removeInvalidDBDirectories()
+            } catch (ignored: Exception) {
+            }
+        }.start()
     }
 }
 
@@ -962,6 +1071,14 @@ fun Context.getCachedMedia(
             }
         }
 
+        val favoritePaths = getFavoritePaths()
+        val validation = mediaFetcher.validateCachedMedia(media, favoritePaths)
+        media = validation.validMedia
+
+        if (path == FAVORITES) {
+            media = media.filter { it.isFavorite } as ArrayList<Medium>
+        }
+
         if (!shouldShowHidden) {
             media = media.filter { !it.path.contains("/.") } as ArrayList<Medium>
         }
@@ -984,33 +1101,28 @@ fun Context.getCachedMedia(
         mediaFetcher.sortMedia(media, config.getFolderSorting(pathToUse))
         val grouped = mediaFetcher.groupMedia(media, pathToUse)
         callback(grouped.clone() as ArrayList<ThumbnailItem>)
-        val OTGPath = config.OTGPath
 
-        try {
-            val mediaToDelete = ArrayList<Medium>()
-            // creating a new thread intentionally, do not reuse the common background thread
-            Thread {
-                media.filter { !getDoesFilePathExist(it.path, OTGPath) }.forEach {
-                    if (it.path.startsWith(recycleBinPath)) {
-                        deleteDBPath(it.path)
+        // Persist refreshed rows and remove invalid rows after the validated cache is visible.
+        Thread {
+            try {
+                validation.invalidMedia.forEach { invalidMedium ->
+                    if (invalidMedium.path.startsWith(recycleBinPath)) {
+                        deleteDBPath(invalidMedium.path)
                     } else {
-                        mediaToDelete.add(it)
-                    }
-                }
-
-                if (mediaToDelete.isNotEmpty()) {
-                    try {
-                        mediaDB.deleteMedia(*mediaToDelete.toTypedArray())
-
-                        mediaToDelete.filter { it.isFavorite }.forEach {
-                            favoritesDB.deleteFavoritePath(it.path)
+                        mediaDB.deleteMediumPath(invalidMedium.path)
+                        if (invalidMedium.isFavorite) {
+                            favoritesDB.deleteFavoritePath(invalidMedium.path)
                         }
-                    } catch (ignored: Exception) {
                     }
                 }
-            }.start()
-        } catch (ignored: Exception) {
-        }
+
+                val mediaToPersist = validation.validMedia.filter { it.deletedTS == 0L }
+                if (mediaToPersist.isNotEmpty()) {
+                    mediaDB.insertAll(mediaToPersist)
+                }
+            } catch (ignored: Exception) {
+            }
+        }.start()
     }
 }
 
@@ -1194,36 +1306,26 @@ fun Context.parseFileChannel(
 
 fun Context.addPathToDB(path: String) {
     ensureBackgroundThread {
-        if (!getDoesFilePathExist(path)) {
+        if (!getDoesFilePathExist(path, config.OTGPath)) {
             return@ensureBackgroundThread
-        }
-
-        val type = when {
-            path.isVideoFast() -> TYPE_VIDEOS
-            path.isGif() -> TYPE_GIFS
-            path.isRawFast() -> TYPE_RAWS
-            path.isSvg() -> TYPE_SVGS
-            path.isPortrait() -> TYPE_PORTRAITS
-            else -> TYPE_IMAGES
         }
 
         try {
             val isFavorite = favoritesDB.isFavorite(path)
-            val videoDuration = if (type == TYPE_VIDEOS) getDuration(path) ?: 0 else 0
-            val medium = Medium(
-                id = null,
-                name = path.getFilenameFromPath(),
-                path = path,
-                parentPath = path.getParentPath(),
-                modified = System.currentTimeMillis(),
-                taken = System.currentTimeMillis(),
-                size = File(path).length(),
-                type = type,
-                videoDuration = videoDuration,
-                isFavorite = isFavorite,
-                deletedTS = 0L,
-                mediaStoreId = 0L
-            )
+            val favoritePaths = arrayListOf<String>().apply {
+                if (isFavorite) {
+                    add(path)
+                }
+            }
+            val mediaFetcher = MediaFetcher(applicationContext)
+            val mediaStoreMedium = mediaFetcher.getMediaStoreMediaForPaths(
+                paths = arrayListOf(path),
+                favoritePaths = favoritePaths
+            ).mediaByPath[path.lowercase(Locale.getDefault())]
+            val medium = mediaStoreMedium ?: mediaFetcher.getMediumFromFile(path, favoritePaths)
+                ?: return@ensureBackgroundThread
+
+            medium.isFavorite = isFavorite
 
             mediaDB.insert(medium)
         } catch (ignored: Exception) {

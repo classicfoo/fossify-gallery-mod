@@ -22,6 +22,16 @@ import java.io.File
 import java.util.Calendar
 import java.util.Locale
 
+data class MediaStoreMediaLookup(
+    val mediaByPath: HashMap<String, Medium> = HashMap(),
+    val indexedPaths: HashSet<String> = HashSet()
+)
+
+data class CachedMediaValidation(
+    val validMedia: ArrayList<Medium>,
+    val invalidMedia: ArrayList<Medium>
+)
+
 class MediaFetcher(val context: Context) {
     var shouldStop = false
 
@@ -134,6 +144,91 @@ class MediaFetcher(val context: Context) {
             }.toMutableList() as ArrayList<String>
         } catch (e: Exception) {
             ArrayList()
+        }
+    }
+
+    fun getCurrentMediaFolderPaths(
+        isPickImage: Boolean = false,
+        isPickVideo: Boolean = false,
+        forceShowHidden: Boolean = false
+    ): HashSet<String> {
+        val folders = HashSet<String>()
+        if (context.config.filterMedia == 0) {
+            return folders
+        }
+
+        try {
+            if (isRPlus() && !Environment.isExternalStorageManager()) {
+                val media = getAndroid11FolderMedia(
+                    isPickImage = isPickImage,
+                    isPickVideo = isPickVideo,
+                    favoritePaths = ArrayList(),
+                    getFavoritePathsOnly = false,
+                    getProperDateTaken = false,
+                    dateTakens = HashMap(),
+                    forceShowHidden = forceShowHidden
+                )
+                folders.addAll(media.keys)
+                return folders
+            }
+
+            val projection = arrayOf(Images.Media.DATA, Images.Media.SIZE)
+            val filterMedia = context.config.filterMedia
+            val selection = getSelectionQuery(filterMedia)
+            val selectionArgs = getSelectionArgsQuery(filterMedia).toTypedArray()
+            val uri = Files.getContentUri("external")
+            context.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    do {
+                        val path = cursor.getStringValue(Images.Media.DATA) ?: continue
+                        if (cursor.getLongValue(Images.Media.SIZE) <= 0L) {
+                            continue
+                        }
+                        if (!isCurrentMediaPathAllowed(path, isPickImage, isPickVideo, forceShowHidden)) {
+                            continue
+                        }
+
+                        folders.add(path.getParentPath().lowercase(Locale.getDefault()))
+                    } while (cursor.moveToNext())
+                }
+            }
+        } catch (ignored: Exception) {
+        }
+
+        return folders
+    }
+
+    private fun isCurrentMediaPathAllowed(
+        path: String,
+        isPickImage: Boolean,
+        isPickVideo: Boolean,
+        forceShowHidden: Boolean
+    ): Boolean {
+        val filename = path.getFilenameFromPath()
+        if (!context.config.shouldShowHidden && !forceShowHidden && filename.startsWith('.')) {
+            return false
+        }
+
+        val isImage = path.isImageFast()
+        val isVideo = if (isImage) false else path.isVideoFast()
+        val isGif = if (isImage || isVideo) false else path.isGif()
+        val isRaw = if (isImage || isVideo || isGif) false else path.isRawFast()
+        val isSvg = if (isImage || isVideo || isGif || isRaw) false else path.isSvg()
+        if (!isImage && !isVideo && !isGif && !isRaw && !isSvg) {
+            return false
+        }
+
+        if ((isVideo && isPickImage) || (isImage && isPickVideo)) {
+            return false
+        }
+
+        val filterMedia = context.config.filterMedia
+        return when {
+            isVideo -> filterMedia and TYPE_VIDEOS != 0
+            isGif -> filterMedia and TYPE_GIFS != 0
+            isRaw -> filterMedia and TYPE_RAWS != 0
+            isSvg -> filterMedia and TYPE_SVGS != 0
+            else -> filterMedia and TYPE_IMAGES != 0
         }
     }
 
@@ -431,7 +526,8 @@ class MediaFetcher(val context: Context) {
         favoritePaths: ArrayList<String>,
         getFavoritePathsOnly: Boolean,
         getProperDateTaken: Boolean,
-        dateTakens: HashMap<String, Long>
+        dateTakens: HashMap<String, Long>,
+        forceShowHidden: Boolean = false
     ): HashMap<String, ArrayList<Medium>> {
         val media = HashMap<String, ArrayList<Medium>>()
         if (!isRPlus() || Environment.isExternalStorageManager()) {
@@ -439,7 +535,7 @@ class MediaFetcher(val context: Context) {
         }
 
         val filterMedia = context.config.filterMedia
-        val showHidden = context.config.shouldShowHidden
+        val showHidden = context.config.shouldShowHidden || forceShowHidden
 
         val projection = arrayOf(
             Images.Media._ID,
@@ -536,6 +632,186 @@ class MediaFetcher(val context: Context) {
         }
 
         return media
+    }
+
+    fun getMediaStoreMediaForPaths(
+        paths: Collection<String>,
+        isPickImage: Boolean = false,
+        isPickVideo: Boolean = false,
+        favoritePaths: ArrayList<String> = ArrayList(),
+        getProperDateTaken: Boolean = false,
+        dateTakens: HashMap<String, Long> = HashMap()
+    ): MediaStoreMediaLookup {
+        val lookup = MediaStoreMediaLookup()
+        if (context.config.filterMedia == 0) {
+            return lookup
+        }
+
+        val pathsToQuery = paths
+            .filter { !context.isPathOnOTG(it) && !it.startsWith(context.recycleBinPath) }
+            .distinctBy { it.lowercase(Locale.getDefault()) }
+        if (pathsToQuery.isEmpty()) {
+            return lookup
+        }
+
+        val projection = arrayOf(
+            Images.Media._ID,
+            Images.Media.DISPLAY_NAME,
+            Images.Media.DATA,
+            Images.Media.DATE_MODIFIED,
+            Images.Media.DATE_TAKEN,
+            Images.Media.SIZE,
+            MediaStore.MediaColumns.DURATION
+        )
+        val uri = Files.getContentUri("external")
+
+        // Keep the selection below SQLite's bind-argument limit on devices with large caches.
+        pathsToQuery.chunked(500).forEach { pathChunk ->
+            if (shouldStop) {
+                return@forEach
+            }
+
+            try {
+                val placeholders = pathChunk.joinToString(",") { "?" }
+                val selection = "${Images.Media.DATA} IN ($placeholders)"
+                val selectionArgs = pathChunk.toTypedArray()
+                context.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        do {
+                            val path = cursor.getStringValue(Images.Media.DATA) ?: continue
+                            val key = path.lowercase(Locale.getDefault())
+                            lookup.indexedPaths.add(key)
+                            if (cursor.getLongValue(Images.Media.SIZE) <= 0L) {
+                                continue
+                            }
+
+                            getMediumFromCursor(
+                                cursor = cursor,
+                                isPickImage = isPickImage,
+                                isPickVideo = isPickVideo,
+                                favoritePaths = favoritePaths,
+                                getProperDateTaken = getProperDateTaken,
+                                dateTakens = dateTakens
+                            )?.let { medium ->
+                                lookup.mediaByPath[key] = medium
+                            }
+                        } while (cursor.moveToNext())
+                    }
+                }
+            } catch (ignored: Exception) {
+            }
+        }
+
+        return lookup
+    }
+
+    fun getMediumFromFile(path: String, favoritePaths: ArrayList<String>, existing: Medium? = null): Medium? {
+        val isOnOTG = context.isPathOnOTG(path)
+        val documentFile = if (isOnOTG) context.getDocumentFile(path) else null
+        val file = if (documentFile == null) File(path) else null
+        val exists = if (documentFile != null) {
+            documentFile.exists() && documentFile.isFile
+        } else {
+            context.getDoesFilePathExist(path, context.config.OTGPath) && file?.isFile == true
+        }
+        if (!exists) {
+            return null
+        }
+
+        val size = documentFile?.length() ?: file?.length() ?: 0L
+        if (size <= 0L) {
+            return null
+        }
+
+        val filename = documentFile?.name ?: file?.name ?: path.getFilenameFromPath()
+        val modified = documentFile?.lastModified() ?: file?.lastModified() ?: 0L
+        val type = existing?.type ?: when {
+            path.isVideoFast() -> TYPE_VIDEOS
+            path.isGif() -> TYPE_GIFS
+            path.isRawFast() -> TYPE_RAWS
+            path.isSvg() -> TYPE_SVGS
+            path.isPortrait() -> TYPE_PORTRAITS
+            else -> TYPE_IMAGES
+        }
+        val videoDuration = existing?.videoDuration ?: if (type == TYPE_VIDEOS) context.getDuration(path) ?: 0 else 0
+        return Medium(
+            id = existing?.id,
+            name = filename,
+            path = path,
+            parentPath = path.getParentPath(),
+            modified = modified,
+            taken = modified,
+            size = size,
+            type = type,
+            videoDuration = videoDuration,
+            isFavorite = favoritePaths.contains(path),
+            deletedTS = existing?.deletedTS ?: 0L,
+            mediaStoreId = 0L
+        )
+    }
+
+    fun validateCachedMedia(media: List<Medium>, favoritePaths: ArrayList<String>): CachedMediaValidation {
+        val validMedia = ArrayList<Medium>()
+        val invalidMedia = ArrayList<Medium>()
+        if (media.isEmpty()) {
+            return CachedMediaValidation(validMedia, invalidMedia)
+        }
+
+        val lookup = getMediaStoreMediaForPaths(
+            paths = media.map { it.path },
+            favoritePaths = favoritePaths
+        )
+        val seenPaths = HashSet<String>()
+        val otgPath = context.config.OTGPath
+
+        media.forEach { cachedMedium ->
+            val pathKey = cachedMedium.path.lowercase(Locale.getDefault())
+            if (!seenPaths.add(pathKey)) {
+                return@forEach
+            }
+
+            val isOnOTG = context.isPathOnOTG(cachedMedium.path)
+            val documentFile = if (isOnOTG) context.getDocumentFile(cachedMedium.path) else null
+            val file = if (documentFile == null) File(cachedMedium.path) else null
+            val exists = if (documentFile != null) {
+                documentFile.exists() && documentFile.isFile
+            } else {
+                context.getDoesFilePathExist(cachedMedium.path, otgPath) && file?.isFile == true
+            }
+            if (!exists) {
+                invalidMedia.add(cachedMedium)
+                return@forEach
+            }
+
+            // A readable zero-byte file is still incomplete, even if MediaStore briefly has a row for it.
+            val actualSize = documentFile?.length() ?: file?.length() ?: 0L
+            if (actualSize <= 0L) {
+                invalidMedia.add(cachedMedium)
+                return@forEach
+            }
+
+            val refreshed = if (lookup.indexedPaths.contains(pathKey)) {
+                lookup.mediaByPath[pathKey]
+            } else {
+                getMediumFromFile(cachedMedium.path, favoritePaths, cachedMedium)
+            }
+
+            if (refreshed == null || refreshed.size <= 0L) {
+                invalidMedia.add(cachedMedium)
+            } else {
+                val actualModified = documentFile?.lastModified() ?: file?.lastModified() ?: 0L
+                if (refreshed.modified <= 0L) {
+                    refreshed.modified = actualModified
+                }
+                if (refreshed.taken <= 0L) {
+                    refreshed.taken = refreshed.modified
+                }
+                refreshed.deletedTS = cachedMedium.deletedTS
+                validMedia.add(refreshed)
+            }
+        }
+
+        return CachedMediaValidation(validMedia, invalidMedia)
     }
 
     fun getMediaFromUris(
