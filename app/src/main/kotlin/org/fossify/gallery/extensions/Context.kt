@@ -1036,8 +1036,11 @@ fun Context.getCachedMedia(
 ) {
     ensureBackgroundThread {
         val mediaFetcher = MediaFetcher(this)
-        val foldersToScan = if (path.isEmpty()) ArrayList() else arrayListOf(path)
-        val shouldShowHidden = config.shouldShowHidden
+        val foldersToScan = if (path.isEmpty()) {
+            mediaFetcher.getFoldersToScan()
+        } else {
+            arrayListOf(path)
+        }
 
         var media = ArrayList<Medium>()
         if (path == FAVORITES) {
@@ -1048,46 +1051,23 @@ fun Context.getCachedMedia(
             media.addAll(getUpdatedDeletedMedia())
         }
 
-        if (path.isEmpty()) {
-            // Show All can use one indexed cache query instead of discovering folders and querying Room once per folder.
-            media.addAll(mediaDB.getAllMedia())
-
-            val excludedPaths = if (config.temporarilyShowExcluded) HashSet() else config.excludedFolders
-            val includedPaths = config.includedFolders
-            val folderNoMediaStatuses = HashMap<String, Boolean>()
-            getNoMediaFoldersSync().forEach { folder ->
-                folderNoMediaStatuses["$folder/$NOMEDIA"] = true
+        if (config.filterMedia and TYPE_PORTRAITS != 0) {
+            val foldersToAdd = ArrayList<String>()
+            for (folder in foldersToScan) {
+                val allFiles = File(folder).listFiles() ?: continue
+                allFiles.filter { it.name.startsWith("img_", true) && it.isDirectory }.forEach {
+                    foldersToAdd.add(it.absolutePath)
+                }
             }
+            foldersToScan.addAll(foldersToAdd)
+        }
 
-            media = media.filter { medium ->
-                !config.isFolderProtected(medium.parentPath)
-                        && medium.parentPath.shouldFolderBeVisible(
-                    excludedPaths = excludedPaths,
-                    includedPaths = includedPaths,
-                    showHidden = shouldShowHidden,
-                    folderNoMediaStatuses = folderNoMediaStatuses
-                ) { folder, hasNoMedia ->
-                    folderNoMediaStatuses[folder] = hasNoMedia
-                }
-            } as ArrayList<Medium>
-        } else {
-            if (config.filterMedia and TYPE_PORTRAITS != 0) {
-                val foldersToAdd = ArrayList<String>()
-                for (folder in foldersToScan) {
-                    val allFiles = File(folder).listFiles() ?: continue
-                    allFiles.filter { it.name.startsWith("img_", true) && it.isDirectory }.forEach {
-                        foldersToAdd.add(it.absolutePath)
-                    }
-                }
-                foldersToScan.addAll(foldersToAdd)
-            }
-
-            foldersToScan.filter { !config.isFolderProtected(it) }.forEach {
-                try {
-                    val currMedia = mediaDB.getMediaFromPath(it)
-                    media.addAll(currMedia)
-                } catch (ignored: Exception) {
-                }
+        val shouldShowHidden = config.shouldShowHidden
+        foldersToScan.filter { path.isNotEmpty() || !config.isFolderProtected(it) }.forEach {
+            try {
+                val currMedia = mediaDB.getMediaFromPath(it)
+                media.addAll(currMedia)
+            } catch (ignored: Exception) {
             }
         }
 

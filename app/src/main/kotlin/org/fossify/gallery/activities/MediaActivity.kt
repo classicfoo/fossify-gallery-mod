@@ -130,6 +130,11 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private var mIsGetVideoIntent = false
     private var mIsGetAnyIntent = false
     private var mIsGettingMedia = false
+    @Volatile
+    private var mMediaLoadGeneration = 0
+    @Volatile
+    private var mAuthoritativeMediaGeneration = 0
+    private val mMediaLoadLock = Any()
     private var mAllowPickingMultiple = false
     private var mShowAll = false
     private var mLoadedInitialPhotos = false
@@ -281,6 +286,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     override fun onPause() {
         super.onPause()
         mMediaReconciliationHandler.removeCallbacksAndMessages(null)
+        mMediaLoadGeneration++
         mIsGettingMedia = false
         binding.mediaRefreshLayout.isRefreshing = false
         storeStateVariables()
@@ -672,9 +678,8 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         }
 
         mIsGettingMedia = true
-        if (mLoadedInitialPhotos) {
-            startAsyncTask()
-        } else {
+        val loadGeneration = ++mMediaLoadGeneration
+        if (!mLoadedInitialPhotos) {
             getCachedMedia(
                 mPath,
                 mIsGetVideoIntent && !mIsGetImageIntent,
@@ -682,19 +687,23 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             ) {
                 if (it.isEmpty()) {
                     runOnUiThread {
-                        binding.mediaRefreshLayout.isRefreshing = true
+                        if (loadGeneration == mMediaLoadGeneration && mAuthoritativeMediaGeneration < loadGeneration) {
+                            binding.mediaRefreshLayout.isRefreshing = true
+                        }
                     }
                 } else {
-                    gotMedia(it, true)
+                    gotMedia(it, true, loadGeneration)
                 }
-                startAsyncTask()
             }
         }
 
+        // Never make the authoritative scan wait for cache validation. A slow or failed cache
+        // lookup must not leave the gallery behind a permanent loading indicator.
+        startAsyncTask(loadGeneration)
         mLoadedInitialPhotos = true
     }
 
-    private fun startAsyncTask() {
+    private fun startAsyncTask(loadGeneration: Int) {
         mCurrAsyncTask?.stopFetching()
         mCurrAsyncTask = GetMediaAsynctask(
             context = applicationContext,
@@ -707,7 +716,9 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 val oldMedia = mMedia.clone() as ArrayList<ThumbnailItem>
                 val newMedia = it
                 try {
-                    gotMedia(newMedia, false)
+                    if (!gotMedia(newMedia, false, loadGeneration)) {
+                        return@ensureBackgroundThread
+                    }
 
                     // remove cached files that are no longer valid for whatever reason
                     val newPaths = newMedia.mapNotNull { it as? Medium }.map { it.path }
@@ -1016,12 +1027,32 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         )
     }
 
-    private fun gotMedia(media: ArrayList<ThumbnailItem>, isFromCache: Boolean) {
-        mIsGettingMedia = false
-        checkLastMediaChanged()
-        mMedia = media
+    private fun gotMedia(media: ArrayList<ThumbnailItem>, isFromCache: Boolean, loadGeneration: Int): Boolean {
+        synchronized(mMediaLoadLock) {
+            if (loadGeneration != mMediaLoadGeneration ||
+                (isFromCache && mAuthoritativeMediaGeneration >= loadGeneration)
+            ) {
+                return false
+            }
+
+            if (!isFromCache) {
+                mAuthoritativeMediaGeneration = loadGeneration
+                mIsGettingMedia = false
+            }
+            mMedia = media
+        }
+
+        if (!isFromCache) {
+            checkLastMediaChanged()
+        }
 
         runOnUiThread {
+            if (loadGeneration != mMediaLoadGeneration ||
+                (isFromCache && mAuthoritativeMediaGeneration >= loadGeneration)
+            ) {
+                return@runOnUiThread
+            }
+
             binding.loadingIndicator.hide()
             binding.mediaRefreshLayout.isRefreshing = false
             binding.mediaEmptyTextPlaceholder.beVisibleIf(media.isEmpty() && !isFromCache)
@@ -1034,9 +1065,9 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             setupAdapter()
         }
 
-        mLatestMediaId = getLatestMediaId()
-        mLatestMediaDateId = getLatestMediaByDateId()
         if (!isFromCache) {
+            mLatestMediaId = getLatestMediaId()
+            mLatestMediaDateId = getLatestMediaByDateId()
             val mediaToInsert = mMedia
                 .filter { it is Medium && it.deletedTS == 0L }.map { it as Medium }
             Thread {
@@ -1046,6 +1077,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 }
             }.start()
         }
+        return true
     }
 
     override fun tryDeleteFiles(fileDirItems: ArrayList<FileDirItem>, skipRecycleBin: Boolean) {
