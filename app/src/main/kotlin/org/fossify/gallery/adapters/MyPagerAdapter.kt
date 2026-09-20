@@ -36,7 +36,36 @@ class MyPagerAdapter(val activity: ViewPagerActivity, fm: FragmentManager, val m
         return fragment
     }
 
-    override fun getItemPosition(item: Any) = PagerAdapter.POSITION_NONE
+    override fun getItemPosition(item: Any): Int {
+        val oldMedium = (item as? ViewPagerFragment)?.arguments?.getSerializable(MEDIUM) as? Medium
+            ?: return PagerAdapter.POSITION_NONE
+        val position = media.indexOfFirst { sameMedium(it, oldMedium) }
+        if (position < 0) {
+            return PagerAdapter.POSITION_NONE
+        }
+
+        val current = media[position]
+        return if (current.path == oldMedium.path && current.getSignature() == oldMedium.getSignature()) {
+            position
+        } else {
+            PagerAdapter.POSITION_NONE
+        }
+    }
+
+    fun updateMedia(newMedia: Collection<Medium>) {
+        val existingFragments = fragments.values.toList()
+        media.clear()
+        media.addAll(newMedia)
+        fragments.clear()
+        existingFragments.forEach { fragment ->
+            val medium = (fragment.arguments?.getSerializable(MEDIUM) as? Medium) ?: return@forEach
+            val position = media.indexOfFirst { sameMedium(it, medium) }
+            if (position >= 0) {
+                fragments[position] = fragment
+            }
+        }
+        notifyDataSetChanged()
+    }
 
     override fun instantiateItem(container: ViewGroup, position: Int): Any {
         val fragment = super.instantiateItem(container, position) as ViewPagerFragment
@@ -54,6 +83,14 @@ class MyPagerAdapter(val activity: ViewPagerActivity, fm: FragmentManager, val m
     }
 
     fun getCurrentFragment(position: Int) = fragments[position]
+
+    private fun sameMedium(first: Medium, second: Medium): Boolean {
+        return if (first.mediaStoreId != 0L && second.mediaStoreId != 0L) {
+            first.mediaStoreId == second.mediaStoreId
+        } else {
+            first.path.equals(second.path, true)
+        }
+    }
 
     fun toggleFullscreen(isFullscreen: Boolean) {
         for ((pos, fragment) in fragments) {

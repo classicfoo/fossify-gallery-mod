@@ -35,6 +35,7 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.load.DataSource
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.engine.GlideException
+import com.bumptech.glide.Priority
 import com.bumptech.glide.request.RequestListener
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.Target
@@ -153,6 +154,7 @@ import org.fossify.gallery.helpers.HIDE_SYSTEM_UI_DELAY
 import org.fossify.gallery.helpers.IS_VIEW_INTENT
 import org.fossify.gallery.helpers.MAX_PRINT_SIDE_SIZE
 import org.fossify.gallery.helpers.MediaFetcher
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 import org.fossify.gallery.helpers.PATH
 import org.fossify.gallery.helpers.PORTRAIT_PATH
 import org.fossify.gallery.helpers.RECYCLE_BIN
@@ -650,7 +652,22 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         }
     }
 
-    private fun updatePagerItems(media: MutableList<Medium>) {
+    private fun updatePagerItems(media: MutableList<Medium>, preferredPath: String? = null) {
+        val anchorPath = preferredPath ?: getCurrentPath()
+        val existingAdapter = binding.viewPager.adapter as? MyPagerAdapter
+        if (existingAdapter != null) {
+            existingAdapter.updateMedia(media)
+            val anchorPosition = media.indexOfFirst { it.path.equals(anchorPath, true) }
+            mPos = if (anchorPosition >= 0) {
+                anchorPosition
+            } else {
+                mPos.coerceIn(0, (media.size - 1).coerceAtLeast(0))
+            }
+            binding.viewPager.setCurrentItem(mPos, false)
+            preloadAdjacentMedia(media, mPos)
+            return
+        }
+
         val pagerAdapter = MyPagerAdapter(this, supportFragmentManager, media)
         if (!isDestroyed) {
             pagerAdapter.shouldInitFragment = mPos < 5
@@ -662,7 +679,23 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 addOnPageChangeListener(this@ViewPagerActivity)
                 currentItem = mPos
             }
+            preloadAdjacentMedia(media, mPos)
         }
+    }
+
+    private fun preloadAdjacentMedia(media: List<Medium>, position: Int) {
+        val options = RequestOptions()
+            .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
+            .priority(Priority.HIGH)
+        listOf(position - 1, position + 1)
+            .mapNotNull { media.getOrNull(it) }
+            .filter { it.isImage() || it.isPortrait() || it.isGIF() }
+            .forEach { medium ->
+                Glide.with(this)
+                    .load(medium.path)
+                    .apply(options)
+                    .preload()
+            }
     }
 
     private fun checkSlideshowOnEnter() {
@@ -874,18 +907,20 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun toggleFileVisibility(hide: Boolean, callback: (() -> Unit)? = null) {
-        toggleFileVisibility(getCurrentPath(), hide) {
-            val newFileName = it.getFilenameFromPath()
-            binding.mediumViewerToolbar.title = newFileName
+        toggleFileVisibility(getCurrentPath(), hide) { newPath, wasSuccessful ->
+            if (wasSuccessful) {
+                val newFileName = newPath.getFilenameFromPath()
+                binding.mediumViewerToolbar.title = newFileName
 
-            getCurrentMedium()!!.apply {
-                name = newFileName
-                path = it
-                getCurrentMedia()[mPos] = this
+                getCurrentMedium()!!.apply {
+                    name = newFileName
+                    path = newPath
+                    getCurrentMedia()[mPos] = this
+                }
+
+                refreshMenuItems()
+                callback?.invoke()
             }
-
-            refreshMenuItems()
-            callback?.invoke()
         }
     }
 
@@ -1143,17 +1178,29 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
 
     private fun toggleFavorite() {
         val medium = getCurrentMedium() ?: return
-        medium.isFavorite = !medium.isFavorite
+        val oldValue = medium.isFavorite
+        val newValue = !oldValue
+        medium.isFavorite = newValue
+        refreshMenuItems()
         ensureBackgroundThread {
-            updateFavorite(medium.path, medium.isFavorite)
-            if (medium.isFavorite) {
-                mFavoritePaths.add(medium.path)
+            val wasUpdated = updateFavorite(medium.path, newValue)
+            if (wasUpdated) {
+                runOnUiThread {
+                    if (newValue) {
+                        if (!mFavoritePaths.contains(medium.path)) {
+                            mFavoritePaths.add(medium.path)
+                        }
+                    } else {
+                        mFavoritePaths.remove(medium.path)
+                    }
+                    MediaSnapshotCoordinator.upsert(applicationContext, arrayListOf(medium))
+                    refreshMenuItems()
+                }
             } else {
-                mFavoritePaths.remove(medium.path)
-            }
-
-            runOnUiThread {
-                refreshMenuItems()
+                runOnUiThread {
+                    medium.isFavorite = oldValue
+                    refreshMenuItems()
+                }
             }
         }
     }
@@ -1215,8 +1262,10 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun restoreFile() {
-        restoreRecycleBinPath(getCurrentPath()) {
-            refreshViewPager()
+        restoreRecycleBinPath(getCurrentPath()) { wasSuccessful ->
+            if (wasSuccessful) {
+                refreshViewPager()
+            }
         }
     }
 
@@ -1293,19 +1342,25 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                     return@checkManageMediaOrHandleSAFDialogSdk30
                 }
 
-                movePathsInRecycleBin(arrayListOf(path)) {
-                    if (it) {
-                        // The copy into the recycle bin succeeded. Remove the item from
-                        // the pager before deleting the source so the current fragment
-                        // never turns into a missing-file screen.
-                        removeDeletedMedium(path)
-                        tryDeleteFileDirItem(fileDirItem, false, false) {
-                            if (!it) {
+                runOnUiThread {
+                    val removedState = removeDeletedMedium(path)
+                    movePathsInRecycleBin(arrayListOf(path)) { moved ->
+                        runOnUiThread {
+                            if (moved) {
+                                if (removedState == null) {
+                                    removeDeletedMedium(path, forceLastItem = true)
+                                }
+                                finishIfPagerEmpty()
+                                tryDeleteFileDirItem(fileDirItem, false, false) {
+                                    if (!it) {
+                                        toast(org.fossify.commons.R.string.unknown_error_occurred)
+                                    }
+                                }
+                            } else {
+                                restoreDeletedMedium(removedState)
                                 toast(org.fossify.commons.R.string.unknown_error_occurred)
                             }
                         }
-                    } else {
-                        toast(org.fossify.commons.R.string.unknown_error_occurred)
                     }
                 }
             }
@@ -1320,35 +1375,90 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 return@checkManageMediaOrHandleSAFDialogSdk30
             }
 
-            tryDeleteFileDirItem(fileDirItem, false, true) {
-                if (it) {
-                    removeDeletedMedium(fileDirItem.path)
-                } else {
-                    toast(org.fossify.commons.R.string.unknown_error_occurred)
+            runOnUiThread {
+                val removedState = removeDeletedMedium(fileDirItem.path)
+                tryDeleteFileDirItem(fileDirItem, false, true) { wasSuccess ->
+                    runOnUiThread {
+                        if (!wasSuccess) {
+                            restoreDeletedMedium(removedState)
+                            toast(org.fossify.commons.R.string.unknown_error_occurred)
+                        } else {
+                            if (removedState == null) {
+                                removeDeletedMedium(fileDirItem.path, forceLastItem = true)
+                            }
+                            finishIfPagerEmpty()
+                            MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(fileDirItem.path))
+                        }
+                    }
                 }
             }
         }
     }
 
-    private fun removeDeletedMedium(path: String) {
+    private data class RemovedPagerMedium(
+        val medium: Medium,
+        val originalIndex: Int,
+        val originalPosition: Int
+    )
+
+    /** Remove a media item after permission dialogs have completed, but before the file I/O. */
+    private fun removeDeletedMedium(path: String, forceLastItem: Boolean = false): RemovedPagerMedium? {
+        if (isFinishing || isDestroyed) {
+            return null
+        }
+
+        val originalIndex = mMediaFiles.indexOfFirst { it.path.equals(path, true) }
+        if (originalIndex < 0) {
+            return null
+        }
+
+        // Keep the last page alive until the delete succeeds so a failed operation can still be
+        // rolled back without briefly showing an empty viewer.
+        if (mMediaFiles.size == 1 && !forceLastItem) {
+            return null
+        }
+
+        val originalPosition = binding.viewPager.currentItem
+        val removed = mMediaFiles[originalIndex]
+        mIgnoredPaths.add(path)
+        val remainingMedia = mMediaFiles
+            .filterNot { it.path.equals(path, true) }
+            .toCollection(ArrayList())
+        val target = remainingMedia.getOrNull(originalPosition.coerceAtMost(remainingMedia.lastIndex))
+            ?: remainingMedia.lastOrNull()
+        mMediaFiles = remainingMedia
+        if (remainingMedia.isEmpty()) {
+            return RemovedPagerMedium(removed, originalIndex, originalPosition)
+        }
+
+        mPos = remainingMedia.indexOfFirst { it.path.equals(target?.path, true) }.coerceAtLeast(0)
+        refreshUI(remainingMedia, false, target?.path)
+        return RemovedPagerMedium(removed, originalIndex, originalPosition)
+    }
+
+    private fun restoreDeletedMedium(state: RemovedPagerMedium?) {
+        if (state == null || isFinishing || isDestroyed) {
+            return
+        }
+
         runOnUiThread {
-            if (isFinishing || isDestroyed) {
+            if (mMediaFiles.any { it.path.equals(state.medium.path, true) }) {
                 return@runOnUiThread
             }
 
-            mIgnoredPaths.add(path)
-            val remainingMedia = mMediaFiles
-                .filterNot { it.path == path }
-                .toCollection(ArrayList())
-            mMediaFiles = remainingMedia
-            if (remainingMedia.isEmpty()) {
-                deleteDirectoryIfEmpty()
-                finish()
-                return@runOnUiThread
-            }
+            mIgnoredPaths.removeAll { it.equals(state.medium.path, true) }
+            val restored = ArrayList(mMediaFiles)
+            restored.add(state.originalIndex.coerceIn(0, restored.size), state.medium)
+            mMediaFiles = restored
+            mPos = restored.indexOfFirst { it.path.equals(state.medium.path, true) }
+            refreshUI(restored, false, state.medium.path)
+        }
+    }
 
-            mPos = binding.viewPager.currentItem.coerceAtMost(remainingMedia.lastIndex)
-            refreshUI(remainingMedia, false)
+    private fun finishIfPagerEmpty() {
+        if (mMediaFiles.isEmpty() && !isFinishing && !isDestroyed) {
+            deleteDirectoryIfEmpty()
+            finish()
         }
     }
 
@@ -1417,7 +1527,12 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         refreshUI(media, refetchViewPagerPosition)
     }
 
-    private fun refreshUI(media: ArrayList<Medium>, refetchViewPagerPosition: Boolean) {
+    private fun refreshUI(
+        media: ArrayList<Medium>,
+        refetchViewPagerPosition: Boolean,
+        preferredPath: String? = null
+    ) {
+        val currentPath = preferredPath ?: getCurrentPath()
         mPrevHashcode = media.hashCode()
         mMediaFiles = media
 
@@ -1429,7 +1544,10 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         }
 
         updateActionbarTitle()
-        updatePagerItems(mMediaFiles.toMutableList())
+        updatePagerItems(
+            mMediaFiles.toMutableList(),
+            preferredPath = currentPath.takeIf { !refetchViewPagerPosition }
+        )
 
         refreshMenuItems()
         checkOrientation()

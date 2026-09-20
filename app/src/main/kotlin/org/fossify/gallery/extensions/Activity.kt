@@ -282,11 +282,11 @@ fun BaseSimpleActivity.removeNoMedia(path: String, callback: (() -> Unit)? = nul
     }
 }
 
-fun BaseSimpleActivity.toggleFileVisibility(oldPath: String, hide: Boolean, callback: ((newPath: String) -> Unit)? = null) {
+fun BaseSimpleActivity.toggleFileVisibility(oldPath: String, hide: Boolean, callback: ((newPath: String, wasSuccessful: Boolean) -> Unit)? = null) {
     val path = oldPath.getParentPath()
     var filename = oldPath.getFilenameFromPath()
     if ((hide && filename.startsWith('.')) || (!hide && !filename.startsWith('.'))) {
-        callback?.invoke(oldPath)
+        callback?.invoke(oldPath, true)
         return
     }
 
@@ -299,16 +299,31 @@ fun BaseSimpleActivity.toggleFileVisibility(oldPath: String, hide: Boolean, call
     val newPath = "$path/$filename"
     renameFile(oldPath, newPath, false) { success, useAndroid30Way ->
         runOnUiThread {
-            callback?.invoke(newPath)
+            callback?.invoke(if (success) newPath else oldPath, success)
         }
 
-        ensureBackgroundThread {
+        if (success) {
+            ensureBackgroundThread {
             updateDBMediaPath(oldPath, newPath)
+            }
         }
     }
 }
 
-fun BaseSimpleActivity.tryCopyMoveFilesTo(fileDirItems: ArrayList<FileDirItem>, isCopyOperation: Boolean, callback: (destinationPath: String) -> Unit) {
+fun BaseSimpleActivity.tryCopyMoveFilesTo(
+    fileDirItems: ArrayList<FileDirItem>,
+    isCopyOperation: Boolean,
+    callback: (destinationPath: String) -> Unit
+) {
+    tryCopyMoveFilesTo(fileDirItems, isCopyOperation, callback, null)
+}
+
+fun BaseSimpleActivity.tryCopyMoveFilesTo(
+    fileDirItems: ArrayList<FileDirItem>,
+    isCopyOperation: Boolean,
+    callback: (destinationPath: String) -> Unit,
+    onStarted: ((destinationPath: String) -> Unit)?
+) {
     if (fileDirItems.isEmpty()) {
         toast(org.fossify.commons.R.string.unknown_error_occurred)
         return
@@ -319,6 +334,7 @@ fun BaseSimpleActivity.tryCopyMoveFilesTo(fileDirItems: ArrayList<FileDirItem>, 
         val destination = it
         handleSAFDialog(source) {
             if (it) {
+                onStarted?.invoke(destination)
                 copyMoveFilesTo(fileDirItems, source.trimEnd('/'), destination, isCopyOperation, true, config.shouldShowHidden, callback)
             }
         }
@@ -403,13 +419,14 @@ fun BaseSimpleActivity.movePathsInRecycleBin(paths: ArrayList<String>, callback:
     }
 }
 
-fun BaseSimpleActivity.restoreRecycleBinPath(path: String, callback: () -> Unit) {
+fun BaseSimpleActivity.restoreRecycleBinPath(path: String, callback: (wasSuccessful: Boolean) -> Unit) {
     restoreRecycleBinPaths(arrayListOf(path), callback)
 }
 
-fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback: () -> Unit) {
+fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback: (wasSuccessful: Boolean) -> Unit) {
     ensureBackgroundThread {
         val newPaths = ArrayList<String>()
+        var allSucceeded = true
         var shownRestoringToPictures = false
         for (source in paths) {
             var destination = source.removePrefix(recycleBinPath)
@@ -429,11 +446,13 @@ fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback
 
             val isShowingSAF = handleSAFDialog(destination) {}
             if (isShowingSAF) {
+                allSucceeded = false
                 return@ensureBackgroundThread
             }
 
             val isShowingSAFSdk30 = handleSAFDialogSdk30(destination) {}
             if (isShowingSAFSdk30) {
+                allSucceeded = false
                 return@ensureBackgroundThread
             }
 
@@ -461,13 +480,16 @@ fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback
 
                 if (File(source).length() == copiedSize) {
                     mediaDB.updateDeleted(destination.removePrefix(recycleBinPath), 0, "$RECYCLE_BIN${source.removePrefix(recycleBinPath)}")
+                    newPaths.add(destination)
+                } else {
+                    allSucceeded = false
                 }
-                newPaths.add(destination)
 
                 if (config.keepLastModified && lastModified != 0L) {
                     File(destination).setLastModified(lastModified)
                 }
             } catch (e: Exception) {
+                allSucceeded = false
                 showErrorToast(e)
             } finally {
                 inputStream?.close()
@@ -476,11 +498,13 @@ fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback
         }
 
         runOnUiThread {
-            callback()
+            callback(allSucceeded && newPaths.size == paths.size)
         }
 
-        rescanPaths(newPaths) {
-            fixDateTaken(newPaths, false)
+        if (newPaths.isNotEmpty()) {
+            rescanPaths(newPaths) {
+                fixDateTaken(newPaths, false)
+            }
         }
     }
 }
