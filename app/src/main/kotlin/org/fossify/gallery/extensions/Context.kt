@@ -534,7 +534,7 @@ fun Context.rescanFolderMedia(path: String) {
 }
 
 fun Context.rescanFolderMediaSync(path: String) {
-    getCachedMedia(path) { cached ->
+    getCachedMedia(path) { _ ->
         GetMediaAsynctask(
             context = applicationContext,
             mPath = path,
@@ -1002,7 +1002,8 @@ fun Context.getCachedMedia(
     path: String,
     getVideosOnly: Boolean = false,
     getImagesOnly: Boolean = false,
-    callback: (ArrayList<ThumbnailItem>) -> Unit
+    callback: (ArrayList<ThumbnailItem>) -> Unit,
+    validatedCallback: ((ArrayList<ThumbnailItem>) -> Unit)? = null
 ) {
     ensureBackgroundThread {
         val mediaFetcher = MediaFetcher(this)
@@ -1058,50 +1059,67 @@ fun Context.getCachedMedia(
 
         val favoritePaths = getFavoritePaths()
         val validation = mediaFetcher.validateStartupCache(media, favoritePaths)
-        media = validation.validMedia
+        val cacheSnapshotForValidation = validation.validMedia.map { it.copy() }
 
-        if (path == FAVORITES) {
-            media = media.filter { it.isFavorite } as ArrayList<Medium>
-        }
-
-        if (!shouldShowHidden) {
-            media = media.filter { !it.path.contains("/.") } as ArrayList<Medium>
-        }
-
-        val filterMedia = config.filterMedia
-        media = (when {
-            getVideosOnly -> media.filter { it.type == TYPE_VIDEOS }
-            getImagesOnly -> media.filter { it.type == TYPE_IMAGES }
-            else -> media.filter {
-                (filterMedia and TYPE_IMAGES != 0 && it.type == TYPE_IMAGES)
-                        || (filterMedia and TYPE_VIDEOS != 0 && it.type == TYPE_VIDEOS)
-                        || (filterMedia and TYPE_GIFS != 0 && it.type == TYPE_GIFS)
-                        || (filterMedia and TYPE_RAWS != 0 && it.type == TYPE_RAWS)
-                        || (filterMedia and TYPE_SVGS != 0 && it.type == TYPE_SVGS)
-                        || (filterMedia and TYPE_PORTRAITS != 0 && it.type == TYPE_PORTRAITS)
+        fun prepareDisplayMedia(source: Collection<Medium>): ArrayList<ThumbnailItem> {
+            var displayMedia = source.distinctBy { it.path }.map { it.copy() } as ArrayList<Medium>
+            if (path == FAVORITES) {
+                displayMedia = displayMedia.filter { it.isFavorite } as ArrayList<Medium>
             }
-        }) as ArrayList<Medium>
 
-        val pathToUse = path.ifEmpty { SHOW_ALL }
-        mediaFetcher.sortMedia(media, config.getFolderSorting(pathToUse))
-        val grouped = mediaFetcher.groupMedia(media, pathToUse)
+            if (!shouldShowHidden) {
+                displayMedia = displayMedia.filter { !it.path.contains("/.") } as ArrayList<Medium>
+            }
+
+            val filterMedia = config.filterMedia
+            displayMedia = (when {
+                getVideosOnly -> displayMedia.filter { it.type == TYPE_VIDEOS }
+                getImagesOnly -> displayMedia.filter { it.type == TYPE_IMAGES }
+                else -> displayMedia.filter {
+                    (filterMedia and TYPE_IMAGES != 0 && it.type == TYPE_IMAGES)
+                            || (filterMedia and TYPE_VIDEOS != 0 && it.type == TYPE_VIDEOS)
+                            || (filterMedia and TYPE_GIFS != 0 && it.type == TYPE_GIFS)
+                            || (filterMedia and TYPE_RAWS != 0 && it.type == TYPE_RAWS)
+                            || (filterMedia and TYPE_SVGS != 0 && it.type == TYPE_SVGS)
+                            || (filterMedia and TYPE_PORTRAITS != 0 && it.type == TYPE_PORTRAITS)
+                }
+            }) as ArrayList<Medium>
+
+            val pathToUse = path.ifEmpty { SHOW_ALL }
+            mediaFetcher.sortMedia(displayMedia, config.getFolderSorting(pathToUse))
+            return mediaFetcher.groupMedia(displayMedia, pathToUse)
+        }
+
+        val grouped = prepareDisplayMedia(cacheSnapshotForValidation)
         callback(grouped.clone() as ArrayList<ThumbnailItem>)
 
-        // Only remove missing rows here. The authoritative scan persists fresh metadata;
-        // writing the startup snapshot back could overwrite it if cache loading finishes later.
+        // Validate the cached snapshot after the first frame. This is intentionally separate from
+        // the fast cache callback: cold startup never waits on one MediaStore/filesystem check per
+        // row, but missing rows still disappear through the same DiffUtil path before the next
+        // launch and stale metadata is corrected in Room for the next launch.
         Thread {
             try {
-                validation.invalidMedia.forEach { invalidMedium ->
+                val validated = mediaFetcher.validateCachedMedia(cacheSnapshotForValidation, favoritePaths)
+                val invalidMedia = validation.invalidMedia + validated.invalidMedia
+                invalidMedia.distinctBy { it.path.lowercase(Locale.getDefault()) }.forEach { invalidMedium ->
                     if (invalidMedium.path.startsWith(recycleBinPath)) {
                         deleteDBPath(invalidMedium.path)
                     } else {
-                        mediaDB.deleteMediumPath(invalidMedium.path)
+                        MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(invalidMedium.path))
                         if (invalidMedium.isFavorite) {
                             favoritesDB.deleteFavoritePath(invalidMedium.path)
                         }
                     }
                 }
 
+                if (validated.validMedia.isNotEmpty()) {
+                    MediaSnapshotCoordinator.upsert(applicationContext, validated.validMedia)
+                }
+
+                val validatedGrouped = prepareDisplayMedia(validated.validMedia)
+                if (validatedGrouped.hashCode() != grouped.hashCode()) {
+                    validatedCallback?.invoke(validatedGrouped)
+                }
             } catch (ignored: Exception) {
             }
         }.start()
@@ -1130,6 +1148,7 @@ fun Context.updateDBMediaPath(oldPath: String, newPath: String) {
     try {
         mediaDB.updateMedium(newFilename, newPath, newParentPath, oldPath)
         favoritesDB.updateFavorite(newFilename, newPath, newParentPath, oldPath)
+        MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(oldPath))
     } catch (ignored: Exception) {
     }
 }

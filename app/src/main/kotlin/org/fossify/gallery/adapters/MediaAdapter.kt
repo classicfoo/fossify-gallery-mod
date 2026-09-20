@@ -61,6 +61,7 @@ import org.fossify.gallery.databinding.VideoItemGridBinding
 import org.fossify.gallery.databinding.VideoItemListBinding
 import org.fossify.gallery.dialogs.DeleteWithRememberDialog
 import org.fossify.gallery.extensions.config
+import org.fossify.gallery.extensions.addPathToDB
 import org.fossify.gallery.extensions.fixDateTaken
 import org.fossify.gallery.extensions.getShortcutImage
 import org.fossify.gallery.extensions.handleMediaManagementPrompt
@@ -323,12 +324,20 @@ class MediaAdapter(
 
         if (selectedKeys.size == 1) {
             RenameItemDialog(activity, firstPath) {
+                media.forEach { item ->
+                    if (item is Medium && item.path.equals(firstPath, true)) {
+                        item.path = it
+                        item.name = it.getFilenameFromPath()
+                        item.parentPath = it.getParentPath()
+                    }
+                }
+                notifyDataSetChanged()
+                finishActMode()
                 ensureBackgroundThread {
                     activity.updateDBMediaPath(firstPath, it)
 
                     activity.runOnUiThread {
                         listener?.refreshItems()
-                        finishActMode()
                     }
                 }
             }
@@ -384,13 +393,50 @@ class MediaAdapter(
     }
 
     private fun toggleFileVisibility(hide: Boolean) {
-        ensureBackgroundThread {
-            getSelectedItems().forEach {
-                activity.toggleFileVisibility(it.path, hide)
-            }
-            activity.runOnUiThread {
-                listener?.refreshItems()
-                finishActMode()
+        val selectedItems = ArrayList(getSelectedItems())
+        if (selectedItems.isEmpty()) {
+            return
+        }
+
+        val originalMedia = ArrayList(media.map { (it as? Medium)?.copy() ?: it })
+        var remaining = selectedItems.size
+        var hadFailure = false
+
+        fun restoreOriginalMedia() {
+            media = ArrayList(originalMedia)
+            notifyDataSetChanged()
+            listener?.updateMediaGridDecoration(media)
+        }
+
+        selectedItems.forEach { medium ->
+            activity.toggleFileVisibility(medium.path, hide) { newPath, wasSuccessful ->
+                if (wasSuccessful) {
+                    val shouldHideFromCurrentView = hide && !config.shouldShowHidden
+                    if (shouldHideFromCurrentView) {
+                        media.removeAll { (it as? Medium)?.path.equals(medium.path, true) }
+                    } else {
+                        media.forEach { item ->
+                            if (item is Medium && item.path.equals(medium.path, true)) {
+                                item.path = newPath
+                                item.name = newPath.getFilenameFromPath()
+                                item.parentPath = newPath.getParentPath()
+                            }
+                        }
+                    }
+                    notifyDataSetChanged()
+                    listener?.updateMediaGridDecoration(media)
+                } else {
+                    hadFailure = true
+                }
+
+                remaining--
+                if (remaining == 0) {
+                    if (hadFailure) {
+                        restoreOriginalMedia()
+                    }
+                    listener?.refreshItems()
+                    finishActMode()
+                }
             }
         }
     }
@@ -441,9 +487,30 @@ class MediaAdapter(
     }
 
     private fun doRestoreFiles(paths: ArrayList<String>) {
-        activity.restoreRecycleBinPaths(paths) {
-            listener?.refreshItems()
+        val originalMedia = ArrayList(media)
+        val pathSet = paths.toHashSet()
+        val positions = media.mapIndexedNotNull { position, item ->
+            (item as? Medium)?.path?.takeIf { it in pathSet }?.let { position }
+        }.sortedDescending().toCollection(ArrayList())
+        media.removeAll { (it as? Medium)?.path in pathSet }
+        updateMediaGridDecoration(media)
+        if (positions.isEmpty()) {
             finishActMode()
+        } else {
+            removeSelectedItems(positions)
+        }
+        finishActMode()
+
+        activity.restoreRecycleBinPaths(paths) {
+            activity.runOnUiThread {
+                if (it) {
+                    listener?.refreshItems()
+                } else {
+                    updateMedia(originalMedia, forceAdapterRefresh = true)
+                    updateMediaGridDecoration(media)
+                    listener?.refreshItems()
+                }
+            }
         }
     }
 
@@ -524,6 +591,7 @@ class MediaAdapter(
             activity.applicationContext.rescanFolderMedia(fileDirItems.first().getParentPath())
 
             val newPaths = fileDirItems.map { "$destinationPath/${it.name}" }.toMutableList() as ArrayList<String>
+            newPaths.forEach { activity.applicationContext.addPathToDB(it) }
             activity.rescanPaths(newPaths) {
                 activity.fixDateTaken(newPaths, false)
             }

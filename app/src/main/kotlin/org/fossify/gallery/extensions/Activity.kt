@@ -424,43 +424,66 @@ fun BaseSimpleActivity.restoreRecycleBinPath(path: String, callback: (wasSuccess
 }
 
 fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback: (wasSuccessful: Boolean) -> Unit) {
-    ensureBackgroundThread {
-        val newPaths = ArrayList<String>()
-        var allSucceeded = true
-        var shownRestoringToPictures = false
-        for (source in paths) {
-            var destination = source.removePrefix(recycleBinPath)
+    val newPaths = ArrayList<String>()
+    var completed = false
 
+    fun finishRestore(allSucceeded: Boolean) {
+        if (completed) {
+            return
+        }
+        completed = true
+        val success = allSucceeded && newPaths.size == paths.size
+        runOnUiThread {
+            callback(success)
+        }
+
+        if (newPaths.isNotEmpty()) {
+            rescanPaths(newPaths) {
+                fixDateTaken(newPaths, false)
+            }
+        }
+    }
+
+    fun restoreNext(index: Int, allSucceeded: Boolean) {
+        if (index >= paths.size) {
+            finishRestore(allSucceeded)
+            return
+        }
+
+        ensureBackgroundThread {
+            val source = paths[index]
+            var destination = source.removePrefix(recycleBinPath)
             val destinationParent = destination.getParentPath()
             if (isRestrictedWithSAFSdk30(destinationParent) && !isInDownloadDir(destinationParent)) {
-                // if the file is not writeable on SDK30+, change it to Pictures
+                // If the file is not writeable on SDK30+, change it to Pictures.
                 val picturesDirectory = getPicturesDirectoryPath(destination)
                 destination = File(picturesDirectory, destination.getFilenameFromPath()).path
-                if (!shownRestoringToPictures) {
-                    toast(getString(R.string.restore_to_path, humanizePath(picturesDirectory)))
-                    shownRestoringToPictures = true
+                toast(getString(R.string.restore_to_path, humanizePath(picturesDirectory)))
+            }
+
+            val continueAfterPermission: (Boolean) -> Unit = { granted ->
+                if (granted) {
+                    restoreNext(index, allSucceeded)
+                } else {
+                    finishRestore(false)
                 }
             }
 
-            val lastModified = File(source).lastModified()
-
-            val isShowingSAF = handleSAFDialog(destination) {}
-            if (isShowingSAF) {
-                allSucceeded = false
+            // Permission dialogs are asynchronous. Resume this exact item after the user grants
+            // access instead of abandoning an optimistic UI operation halfway through a batch.
+            if (handleSAFDialog(destination, continueAfterPermission)) {
                 return@ensureBackgroundThread
             }
-
-            val isShowingSAFSdk30 = handleSAFDialogSdk30(destination) {}
-            if (isShowingSAFSdk30) {
-                allSucceeded = false
+            if (handleSAFDialogSdk30(destination, continueAfterPermission)) {
                 return@ensureBackgroundThread
             }
 
             if (getDoesFilePathExist(destination)) {
-                val newFile = getAlternativeFile(File(destination))
-                destination = newFile.path
+                destination = getAlternativeFile(File(destination)).path
             }
 
+            val lastModified = File(source).lastModified()
+            var copiedSuccessfully = false
             var inputStream: InputStream? = null
             var out: OutputStream? = null
             try {
@@ -477,35 +500,34 @@ fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback
                 }
 
                 out?.flush()
-
-                if (File(source).length() == copiedSize) {
-                    mediaDB.updateDeleted(destination.removePrefix(recycleBinPath), 0, "$RECYCLE_BIN${source.removePrefix(recycleBinPath)}")
+                copiedSuccessfully = File(source).length() == copiedSize
+                if (copiedSuccessfully) {
+                    mediaDB.updateDeleted(
+                        destination.removePrefix(recycleBinPath),
+                        0,
+                        "$RECYCLE_BIN${source.removePrefix(recycleBinPath)}"
+                    )
+                    addPathToDB(destination)
                     newPaths.add(destination)
-                } else {
-                    allSucceeded = false
-                }
-
-                if (config.keepLastModified && lastModified != 0L) {
-                    File(destination).setLastModified(lastModified)
+                    if (config.keepLastModified && lastModified != 0L) {
+                        File(destination).setLastModified(lastModified)
+                    }
                 }
             } catch (e: Exception) {
-                allSucceeded = false
                 showErrorToast(e)
             } finally {
                 inputStream?.close()
                 out?.close()
             }
-        }
 
-        runOnUiThread {
-            callback(allSucceeded && newPaths.size == paths.size)
+            restoreNext(index + 1, allSucceeded && copiedSuccessfully)
         }
+    }
 
-        if (newPaths.isNotEmpty()) {
-            rescanPaths(newPaths) {
-                fixDateTaken(newPaths, false)
-            }
-        }
+    if (paths.isEmpty()) {
+        finishRestore(false)
+    } else {
+        restoreNext(0, true)
     }
 }
 

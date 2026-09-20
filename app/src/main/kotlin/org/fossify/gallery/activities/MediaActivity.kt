@@ -553,6 +553,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private fun getMediaAdapter() = binding.mediaGrid.adapter as? MediaAdapter
 
     private fun setupAdapter(forceAdapterRefresh: Boolean = false) {
+        if (mMedia.isNotEmpty()) {
+            binding.startupLogo.beGone()
+        }
+
         if (!mShowAll && isDirEmpty()) {
             return
         }
@@ -673,11 +677,15 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private fun restoreAllFiles() {
         val paths = mMedia.filter { it is Medium }.map { (it as Medium).path } as ArrayList<String>
         showRestoreConfirmationDialog(paths.size) {
-            restoreRecycleBinPaths(paths) {
-                ensureBackgroundThread {
-                    directoryDB.deleteDirPath(RECYCLE_BIN)
+            restoreRecycleBinPaths(paths) { wasSuccessful ->
+                if (wasSuccessful) {
+                    ensureBackgroundThread {
+                        directoryDB.deleteDirPath(RECYCLE_BIN)
+                    }
+                    finish()
+                } else {
+                    toast(org.fossify.commons.R.string.unknown_error_occurred)
                 }
-                finish()
             }
         }
     }
@@ -734,14 +742,20 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         startAsyncTask(loadGeneration)
         if (!mLoadedInitialPhotos) {
             getCachedMedia(
-                mPath,
-                mIsGetVideoIntent && !mIsGetImageIntent,
-                mIsGetImageIntent && !mIsGetVideoIntent
-            ) {
-                if (it.isNotEmpty()) {
-                    gotMedia(it, true, loadGeneration)
+                path = mPath,
+                getVideosOnly = mIsGetVideoIntent && !mIsGetImageIntent,
+                getImagesOnly = mIsGetImageIntent && !mIsGetVideoIntent,
+                callback = {
+                    if (it.isNotEmpty()) {
+                        gotMedia(it, true, loadGeneration)
+                    }
+                },
+                validatedCallback = {
+                    if (it.isNotEmpty() || mMedia.isNotEmpty()) {
+                        gotMedia(it, true, loadGeneration)
+                    }
                 }
-            }
+            )
         }
 
         // Never make the authoritative scan wait for cache validation. A slow or failed cache
@@ -1102,6 +1116,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             }
 
             binding.loadingIndicator.hide()
+            binding.startupLogo.beGone()
             binding.mediaRefreshLayout.isRefreshing = false
             binding.mediaEmptyTextPlaceholder.beVisibleIf(media.isEmpty() && !isFromCache)
             binding.mediaEmptyTextPlaceholder2.beVisibleIf(media.isEmpty() && !isFromCache)
@@ -1206,10 +1221,15 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
             ensureBackgroundThread {
                 val useRecycleBin = config.useRecycleBin
+                val removedFromActiveSnapshot = ArrayList<String>()
                 filtered.forEach {
                     if (it.path.startsWith(recycleBinPath) || !useRecycleBin) {
                         deleteDBPath(it.path)
+                        removedFromActiveSnapshot.add(it.path)
                     }
+                }
+                if (removedFromActiveSnapshot.isNotEmpty()) {
+                    MediaSnapshotCoordinator.remove(applicationContext, removedFromActiveSnapshot)
                 }
             }
 

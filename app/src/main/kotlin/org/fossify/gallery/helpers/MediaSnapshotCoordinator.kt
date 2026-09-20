@@ -145,11 +145,9 @@ object MediaSnapshotCoordinator {
                 }
 
                 removals.forEach { pathKey ->
-                    // The DAO query is case-insensitive; using the key is safe for all normal
-                    // Android paths and keeps duplicate notifications from producing duplicate work.
-                    context.mediaDB.getCachedLibrary()
-                        .firstOrNull { keyOf(it.path) == pathKey }
-                        ?.let { context.mediaDB.deleteMediumPath(it.path) }
+                    // The DAO query is case-insensitive; the normalized key is safe for all
+                    // normal Android paths and avoids loading the complete library per removal.
+                    context.mediaDB.deleteMediumPath(pathKey)
                 }
 
                 if (upserts.isNotEmpty()) {

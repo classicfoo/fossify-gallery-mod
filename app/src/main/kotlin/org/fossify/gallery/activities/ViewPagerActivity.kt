@@ -102,6 +102,7 @@ import org.fossify.gallery.dialogs.DeleteWithRememberDialog
 import org.fossify.gallery.dialogs.SaveAsDialog
 import org.fossify.gallery.dialogs.SlideshowDialog
 import org.fossify.gallery.extensions.config
+import org.fossify.gallery.extensions.addPathToDB
 import org.fossify.gallery.extensions.favoritesDB
 import org.fossify.gallery.extensions.fixDateTaken
 import org.fossify.gallery.extensions.getFavoritePaths
@@ -465,6 +466,8 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             return
         }
 
+        restrictSeededMediaToCurrentFolder()
+
         showSystemUI()
 
         if (intent.getBooleanExtra(SKIP_AUTHENTICATION, false)) {
@@ -478,6 +481,28 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 }
             }
         }
+    }
+
+    private fun restrictSeededMediaToCurrentFolder() {
+        if (mMediaFiles.isEmpty()) {
+            return
+        }
+
+        if (mShowAll) {
+            // A process-wide Gallery snapshot is useful for Show All only when it actually
+            // contains the requested item. Never let a camera review open an unrelated old row.
+            if (mMediaFiles.none { it.path.equals(mPath, true) }) {
+                mMediaFiles.clear()
+            }
+            return
+        }
+
+        val parentPath = mPath.getParentPath()
+        val scoped = mMediaFiles.filter {
+            it.path.equals(mPath, true) || it.parentPath.equals(parentPath, true)
+        }
+        mMediaFiles.clear()
+        mMediaFiles.addAll(scoped)
     }
 
     private fun initContinue() {
@@ -538,14 +563,20 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         ) {
             ensureBackgroundThread {
                 if (mediaDB.getMediaFromPath(mPath).isEmpty()) {
-                    val filename = mPath.getFilenameFromPath()
-                    val parent = mPath.getParentPath()
-                    val type = getTypeFromPath(mPath)
                     val isFavorite = favoritesDB.isFavorite(mPath)
-                    val duration = if (type == TYPE_VIDEOS) getDuration(mPath) ?: 0 else 0
-                    val ts = System.currentTimeMillis()
-                    val medium = Medium(null, filename, mPath, parent, ts, ts, File(mPath).length(), type, duration, isFavorite, 0, 0L)
-                    mediaDB.insert(medium)
+                    val favorites = arrayListOf<String>().apply {
+                        if (isFavorite) {
+                            add(mPath)
+                        }
+                    }
+                    val mediaFetcher = MediaFetcher(applicationContext)
+                    val medium = mediaFetcher.getMediaStoreMediaForPaths(
+                        paths = arrayListOf(mPath),
+                        favoritePaths = favorites
+                    ).mediaByPath[mPath.lowercase()] ?: mediaFetcher.getMediumFromFile(mPath, favorites)
+                    if (medium != null) {
+                        MediaSnapshotCoordinator.upsert(applicationContext, arrayListOf(medium))
+                    }
                 }
             }
         }
@@ -685,7 +716,9 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
 
     private fun preloadAdjacentMedia(media: List<Medium>, position: Int) {
         val options = RequestOptions()
+            .signature(media.getOrNull(position)?.getKey() ?: return)
             .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
+            .fitCenter()
             .priority(Priority.HIGH)
         listOf(position - 1, position + 1)
             .mapNotNull { media.getOrNull(it) }
@@ -693,7 +726,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             .forEach { medium ->
                 Glide.with(this)
                     .load(medium.path)
-                    .apply(options)
+                    .apply(options.signature(medium.getKey()))
                     .preload()
             }
     }
@@ -894,6 +927,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         val fileDirItems = arrayListOf(FileDirItem(currPath, currPath.getFilenameFromPath()))
         tryCopyMoveFilesTo(fileDirItems, isCopyOperation) {
             val newPath = "$it/${currPath.getFilenameFromPath()}"
+            applicationContext.addPathToDB(newPath)
             rescanPaths(arrayListOf(newPath)) {
                 fixDateTaken(arrayListOf(newPath), false)
             }
@@ -1351,6 +1385,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                                     removeDeletedMedium(path, forceLastItem = true)
                                 }
                                 finishIfPagerEmpty()
+                                MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(path))
                                 tryDeleteFileDirItem(fileDirItem, false, false) {
                                     if (!it) {
                                         toast(org.fossify.commons.R.string.unknown_error_occurred)
