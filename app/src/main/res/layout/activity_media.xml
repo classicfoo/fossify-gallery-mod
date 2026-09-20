@@ -23,18 +23,6 @@
         app:showDelay="500"
         tools:visibility="visible" />
 
-    <ImageView
-        android:id="@+id/startup_logo"
-        android:layout_width="96dp"
-        android:layout_height="96dp"
-        android:layout_gravity="center"
-        android:alpha="0.72"
-        android:contentDescription="@string/app_launcher_name"
-        android:importantForAccessibility="no"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_launcher_foreground"
-        android:visibility="visible" />
-
     <RelativeLayout
         android:id="@+id/media_holder"
         android:layout_width="match_parent"

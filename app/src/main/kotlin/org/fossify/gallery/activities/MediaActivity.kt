@@ -553,10 +553,6 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private fun getMediaAdapter() = binding.mediaGrid.adapter as? MediaAdapter
 
     private fun setupAdapter(forceAdapterRefresh: Boolean = false) {
-        if (mMedia.isNotEmpty()) {
-            binding.startupLogo.beGone()
-        }
-
         if (!mShowAll && isDirEmpty()) {
             return
         }
@@ -1005,9 +1001,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         (binding.mediaGrid.layoutManager as MyGridLayoutManager).spanCount = config.mediaColumnCnt
         handleGridSpacing()
         refreshMenuItems()
-        getMediaAdapter()?.apply {
-            notifyItemRangeChanged(0, media.size)
-        }
+        getMediaAdapter()?.refreshGridLayout()
     }
 
     private fun isSetWallpaperIntent() = intent.getBooleanExtra(SET_WALLPAPER_INTENT, false)
@@ -1116,7 +1110,6 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             }
 
             binding.loadingIndicator.hide()
-            binding.startupLogo.beGone()
             binding.mediaRefreshLayout.isRefreshing = false
             binding.mediaEmptyTextPlaceholder.beVisibleIf(media.isEmpty() && !isFromCache)
             binding.mediaEmptyTextPlaceholder2.beVisibleIf(media.isEmpty() && !isFromCache)

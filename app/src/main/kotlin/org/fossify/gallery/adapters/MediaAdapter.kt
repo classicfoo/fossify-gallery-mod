@@ -281,6 +281,23 @@ class MediaAdapter(
 
     fun isASectionTitle(position: Int) = media.getOrNull(position) is ThumbnailSection
 
+    /**
+     * Rebind and remeasure the attached cells after the grid span count changes.
+     *
+     * GridLayoutManager can retain already attached child measurements when its
+     * span count changes. Rebinding alone is not enough in that case, so invalidate
+     * the decorations and explicitly request a layout from the visible cells and
+     * the RecyclerView itself.
+     */
+    fun refreshGridLayout() {
+        notifyDataSetChanged()
+        for (index in 0 until mediaRecyclerView.childCount) {
+            mediaRecyclerView.getChildAt(index)?.requestLayout()
+        }
+        mediaRecyclerView.invalidateItemDecorations()
+        mediaRecyclerView.requestLayout()
+    }
+
     private fun checkHideBtnVisibility(menu: Menu, selectedItems: ArrayList<Medium>) {
         val isInRecycleBin = selectedItems.firstOrNull()?.getIsInRecycleBin() == true
         menu.findItem(R.id.cab_hide).isVisible = (!isRPlus() || isExternalStorageManager()) && !isInRecycleBin && selectedItems.any { !it.isHidden() }
