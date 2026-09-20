@@ -152,6 +152,7 @@ import org.fossify.gallery.helpers.GO_TO_PREV_ITEM
 import org.fossify.gallery.helpers.HIDE_SYSTEM_UI_DELAY
 import org.fossify.gallery.helpers.IS_VIEW_INTENT
 import org.fossify.gallery.helpers.MAX_PRINT_SIDE_SIZE
+import org.fossify.gallery.helpers.MediaFetcher
 import org.fossify.gallery.helpers.PATH
 import org.fossify.gallery.helpers.PORTRAIT_PATH
 import org.fossify.gallery.helpers.RECYCLE_BIN
@@ -197,6 +198,8 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     private var mShowAll = false
     private var mIsSlideshowActive = false
     private var mPrevHashcode = 0
+    private var mExternalCacheLoaded = false
+    private var mExternalFolderScanComplete = false
 
     private var mSlideshowHandler = Handler()
     private var mSlideshowInterval = SLIDESHOW_DEFAULT_INTERVAL
@@ -421,8 +424,12 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             try {
                 mPath = savedPath.ifEmpty { intent.getStringExtra(PATH).orEmpty() }
 
-                // make sure "Open Recycle Bin" works well with "Show all folders content"
-                mShowAll = config.showAll && (mPath.isNotEmpty() && !mPath.startsWith(recycleBinPath))
+                // A third-party camera review must stay in the photo's folder. Using the
+                // global Show All setting here makes the viewer scan the whole library.
+                val isThirdPartyView = intent.getBooleanExtra(IS_VIEW_INTENT, false) &&
+                    !intent.getBooleanExtra(IS_FROM_GALLERY, false)
+                mShowAll = !isThirdPartyView && config.showAll &&
+                    (mPath.isNotEmpty() && !mPath.startsWith(recycleBinPath))
             } catch (e: Exception) {
                 showErrorToast(e)
                 finish()
@@ -502,14 +509,11 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
 
         // show the selected image asap, while loading the rest in the background to allow swiping between them. Might be needed at third party intents
         if (mMediaFiles.isEmpty() && mPath.isNotEmpty() && mDirectory != FAVORITES) {
-            val filename = mPath.getFilenameFromPath()
-            val folder = mPath.getParentPath()
-            val type = getTypeFromPath(mPath)
-            val medium = Medium(null, filename, mPath, folder, 0, 0, 0, type, 0, false, 0L, 0L)
-            mMediaFiles.add(medium)
+            mMediaFiles.add(createExternalPlaceholder())
             gotMedia(mMediaFiles as ArrayList<ThumbnailItem>, refetchViewPagerPosition = true)
         }
 
+        loadCachedExternalFolder()
         refreshViewPager(true)
         binding.viewPager.offscreenPageLimit = 2
 
@@ -553,6 +557,75 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             path.isRawFast() -> TYPE_RAWS
             path.isPortrait() -> TYPE_PORTRAITS
             else -> TYPE_IMAGES
+        }
+    }
+
+    private fun loadCachedExternalFolder() {
+        if (!isExternalIntent() || mDirectory == FAVORITES || mDirectory == RECYCLE_BIN || mExternalCacheLoaded) {
+            return
+        }
+
+        mExternalCacheLoaded = true
+        ensureBackgroundThread {
+            val cachedMedia = try {
+                mediaDB.getMediaFromPath(mDirectory)
+                    .filter { it.path == mPath || isCachedMediumVisible(it) }
+                    .distinctBy { it.path }
+                    .toMutableList()
+            } catch (ignored: Exception) {
+                mutableListOf()
+            }
+
+            if (cachedMedia.none { it.path == mPath }) {
+                cachedMedia.add(createExternalPlaceholder())
+            }
+
+            val sortedMedia = ArrayList(cachedMedia)
+            MediaFetcher(applicationContext).sortMedia(
+                sortedMedia,
+                config.getFolderSorting(mDirectory)
+            )
+
+            runOnUiThread {
+                if (isDestroyed || mExternalFolderScanComplete) {
+                    return@runOnUiThread
+                }
+
+                mMediaFiles.clear()
+                mMediaFiles.addAll(sortedMedia)
+                gotMedia(mMediaFiles as ArrayList<ThumbnailItem>, refetchViewPagerPosition = true)
+            }
+        }
+    }
+
+    private fun createExternalPlaceholder() = Medium(
+        null,
+        mPath.getFilenameFromPath(),
+        mPath,
+        mPath.getParentPath(),
+        File(mPath).lastModified(),
+        File(mPath).lastModified(),
+        File(mPath).length(),
+        getTypeFromPath(mPath),
+        0,
+        false,
+        0L,
+        0L
+    )
+
+    private fun isCachedMediumVisible(medium: Medium): Boolean {
+        if (!config.shouldShowHidden && medium.path.contains("/.")) {
+            return false
+        }
+
+        return when {
+            medium.type == TYPE_IMAGES -> config.filterMedia and TYPE_IMAGES != 0
+            medium.type == TYPE_VIDEOS -> config.filterMedia and TYPE_VIDEOS != 0
+            medium.type == TYPE_GIFS -> config.filterMedia and TYPE_GIFS != 0
+            medium.type == TYPE_RAWS -> config.filterMedia and TYPE_RAWS != 0
+            medium.type == TYPE_SVGS -> config.filterMedia and TYPE_SVGS != 0
+            medium.type == TYPE_PORTRAITS -> config.filterMedia and TYPE_PORTRAITS != 0
+            else -> true
         }
     }
 
@@ -1320,6 +1393,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         val isRandomSorting = config.getFolderSorting(mDirectory) and SORT_BY_RANDOM != 0
         if (!isRandomSorting || isExternalIntent()) {
             GetMediaAsynctask(applicationContext, mDirectory, isPickImage = false, isPickVideo = false, showAll = mShowAll) {
+                mExternalFolderScanComplete = true
                 gotMedia(it, refetchViewPagerPosition = refetchPosition)
             }.execute()
         }
