@@ -184,8 +184,8 @@ import org.fossify.gallery.helpers.TYPE_VIDEOS
 import org.fossify.gallery.helpers.getPermissionToRequest
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.models.ThumbnailItem
+import org.fossify.gallery.models.ThumbnailSection
 import java.io.File
-import kotlin.math.min
 
 @Suppress("UNCHECKED_CAST")
 class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, ViewPagerFragment.FragmentListener {
@@ -216,6 +216,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     private var mMediaFiles = ArrayList<Medium>()
     private var mFavoritePaths = ArrayList<String>()
     private var mIgnoredPaths = ArrayList<String>()
+    private var mDeleteInProgress = false
     private var mOriginalBrightness: Float? = null
 
     private val binding by viewBinding(ActivityMediumBinding::inflate)
@@ -684,17 +685,22 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun updatePagerItems(media: MutableList<Medium>, preferredPath: String? = null) {
+        if (isFinishing || isDestroyed || media.isEmpty()) {
+            mPos = -1
+            return
+        }
+
         val anchorPath = preferredPath ?: getCurrentPath()
         val existingAdapter = binding.viewPager.adapter as? MyPagerAdapter
         if (existingAdapter != null) {
-            existingAdapter.updateMedia(media)
+            existingAdapter.updateMedia(media.toList())
             val anchorPosition = media.indexOfFirst { it.path.equals(anchorPath, true) }
             mPos = if (anchorPosition >= 0) {
                 anchorPosition
             } else {
                 mPos.coerceIn(0, (media.size - 1).coerceAtLeast(0))
             }
-            binding.viewPager.setCurrentItem(mPos, false)
+            binding.viewPager.setCurrentItem(mPos.coerceIn(0, media.lastIndex), false)
             preloadAdjacentMedia(media, mPos)
             return
         }
@@ -708,7 +714,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 adapter = pagerAdapter
                 pagerAdapter.shouldInitFragment = true
                 addOnPageChangeListener(this@ViewPagerActivity)
-                currentItem = mPos
+                currentItem = mPos.coerceIn(0, media.lastIndex)
             }
             preloadAdjacentMedia(media, mPos)
         }
@@ -770,7 +776,8 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     private fun goToNextMedium(forward: Boolean) {
         val oldPosition = binding.viewPager.currentItem
         val newPosition = if (forward) oldPosition + 1 else oldPosition - 1
-        if (newPosition == -1 || newPosition > binding.viewPager.adapter!!.count - 1) {
+        val count = binding.viewPager.adapter?.count ?: 0
+        if (count == 0 || newPosition !in 0 until count) {
             slideshowEnded(forward)
         } else {
             binding.viewPager.setCurrentItem(newPosition, false)
@@ -833,10 +840,15 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
 
     private fun slideshowEnded(forward: Boolean) {
         if (config.loopSlideshow) {
+            val count = binding.viewPager.adapter?.count ?: 0
+            if (count == 0) {
+                stopSlideshow()
+                return
+            }
             if (forward) {
                 binding.viewPager.setCurrentItem(0, false)
             } else {
-                binding.viewPager.setCurrentItem(binding.viewPager.adapter!!.count - 1, false)
+                binding.viewPager.setCurrentItem(count - 1, false)
             }
         } else {
             stopSlideshow()
@@ -1363,6 +1375,10 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun deleteConfirmed(skipRecycleBin: Boolean) {
+        if (mDeleteInProgress) {
+            return
+        }
+
         val currentMedium = getCurrentMedium()
         val path = currentMedium?.path ?: return
         if (getIsPathDirectory(path) || !path.isMediaFile()) {
@@ -1370,9 +1386,11 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         }
 
         val fileDirItem = currentMedium.toFileDirItem()
+        mDeleteInProgress = true
         if (config.useRecycleBin && !skipRecycleBin && !getCurrentMedium()!!.getIsInRecycleBin()) {
             checkManageMediaOrHandleSAFDialogSdk30(fileDirItem.path) {
                 if (!it) {
+                    mDeleteInProgress = false
                     return@checkManageMediaOrHandleSAFDialogSdk30
                 }
 
@@ -1380,20 +1398,21 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                     val removedState = removeDeletedMedium(path)
                     movePathsInRecycleBin(arrayListOf(path)) { moved ->
                         runOnUiThread {
-                            if (moved) {
-                                if (removedState == null) {
-                                    removeDeletedMedium(path, forceLastItem = true)
-                                }
-                                finishIfPagerEmpty()
-                                MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(path))
-                                tryDeleteFileDirItem(fileDirItem, false, false) {
-                                    if (!it) {
+                            if (!moved) {
+                                rollbackDeletedMedium(removedState)
+                                toast(org.fossify.commons.R.string.unknown_error_occurred)
+                                return@runOnUiThread
+                            }
+
+                            tryDeleteFileDirItem(fileDirItem, false, false) { wasDeleted ->
+                                runOnUiThread {
+                                    if (wasDeleted) {
+                                        commitDeletedMedium(path, removedState)
+                                    } else {
+                                        rollbackDeletedMedium(removedState)
                                         toast(org.fossify.commons.R.string.unknown_error_occurred)
                                     }
                                 }
-                            } else {
-                                restoreDeletedMedium(removedState)
-                                toast(org.fossify.commons.R.string.unknown_error_occurred)
                             }
                         }
                     }
@@ -1407,6 +1426,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     private fun handleDeletion(fileDirItem: FileDirItem) {
         checkManageMediaOrHandleSAFDialogSdk30(fileDirItem.path) {
             if (!it) {
+                mDeleteInProgress = false
                 return@checkManageMediaOrHandleSAFDialogSdk30
             }
 
@@ -1415,14 +1435,10 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 tryDeleteFileDirItem(fileDirItem, false, true) { wasSuccess ->
                     runOnUiThread {
                         if (!wasSuccess) {
-                            restoreDeletedMedium(removedState)
+                            rollbackDeletedMedium(removedState)
                             toast(org.fossify.commons.R.string.unknown_error_occurred)
                         } else {
-                            if (removedState == null) {
-                                removeDeletedMedium(fileDirItem.path, forceLastItem = true)
-                            }
-                            finishIfPagerEmpty()
-                            MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(fileDirItem.path))
+                            commitDeletedMedium(fileDirItem.path, removedState)
                         }
                     }
                 }
@@ -1453,7 +1469,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             return null
         }
 
-        val originalPosition = binding.viewPager.currentItem
+        val originalPosition = binding.viewPager.currentItem.coerceAtLeast(0)
         val removed = mMediaFiles[originalIndex]
         mIgnoredPaths.add(path)
         val remainingMedia = mMediaFiles
@@ -1488,6 +1504,53 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             mPos = restored.indexOfFirst { it.path.equals(state.medium.path, true) }
             refreshUI(restored, false, state.medium.path)
         }
+    }
+
+    private fun rollbackDeletedMedium(state: RemovedPagerMedium?) {
+        restoreDeletedMedium(state)
+        mDeleteInProgress = false
+    }
+
+    private fun commitDeletedMedium(path: String, state: RemovedPagerMedium?) {
+        if (state == null && !isFinishing && !isDestroyed) {
+            removeDeletedMedium(path, forceLastItem = true)
+        }
+
+        removeFromSharedGallerySnapshot(path)
+        MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(path))
+        mDeleteInProgress = false
+        finishIfPagerEmpty()
+    }
+
+    /** Keep the paused Gallery activity from reusing a deleted row when it is resumed. */
+    private fun removeFromSharedGallerySnapshot(path: String) {
+        val current = MediaActivity.mMedia
+        if (current.none { (it as? Medium)?.path.equals(path, true) }) {
+            return
+        }
+
+        val updated = ArrayList<ThumbnailItem>(current.size)
+        var pendingSection: ThumbnailSection? = null
+        current.forEach { item ->
+            when (item) {
+                is ThumbnailSection -> pendingSection = item
+                is Medium -> if (!item.path.equals(path, true)) {
+                    pendingSection?.let {
+                        updated.add(it)
+                        pendingSection = null
+                    }
+                    updated.add(item)
+                }
+                else -> {
+                    pendingSection?.let {
+                        updated.add(it)
+                        pendingSection = null
+                    }
+                    updated.add(item)
+                }
+            }
+        }
+        MediaActivity.mMedia = updated
     }
 
     private fun finishIfPagerEmpty() {
@@ -1546,6 +1609,10 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun gotMedia(thumbnailItems: ArrayList<ThumbnailItem>, ignorePlayingVideos: Boolean = false, refetchViewPagerPosition: Boolean = false) {
+        if (isFinishing || isDestroyed) {
+            return
+        }
+
         val media = thumbnailItems.asSequence().filter {
             it is Medium && !mIgnoredPaths.contains(it.path)
         }.map { it as Medium }.toMutableList() as ArrayList<Medium>
@@ -1573,9 +1640,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
 
         if (refetchViewPagerPosition || mPos == -1) {
             mPos = getPositionInList(media)
-            if (mPos == -1) {
-                min(mPos, media.lastIndex)
-            }
+            mPos = mPos.coerceIn(0, media.lastIndex)
         }
 
         updateActionbarTitle()
@@ -1663,12 +1728,14 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     override fun isFullScreen() = mIsFullScreen
 
     override fun goToPrevItem() {
-        binding.viewPager.setCurrentItem(binding.viewPager.currentItem - 1, false)
+        val count = binding.viewPager.adapter?.count ?: return
+        binding.viewPager.setCurrentItem((binding.viewPager.currentItem - 1).coerceIn(0, count - 1), false)
         checkOrientation()
     }
 
     override fun goToNextItem() {
-        binding.viewPager.setCurrentItem(binding.viewPager.currentItem + 1, false)
+        val count = binding.viewPager.adapter?.count ?: return
+        binding.viewPager.setCurrentItem((binding.viewPager.currentItem + 1).coerceIn(0, count - 1), false)
         checkOrientation()
     }
 
@@ -1737,11 +1804,7 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun getCurrentMedium(): Medium? {
-        return if (getCurrentMedia().isEmpty() || mPos == -1) {
-            null
-        } else {
-            getCurrentMedia()[min(mPos, getCurrentMedia().lastIndex)]
-        }
+        return getCurrentMedia().getOrNull(mPos)
     }
 
     private fun getCurrentMedia() = if (mAreSlideShowMediaVisible || mRandomSlideshowStopped) mSlideshowMedia else mMediaFiles
@@ -1751,8 +1814,15 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     override fun onPageScrolled(position: Int, positionOffset: Float, positionOffsetPixels: Int) {}
 
     override fun onPageSelected(position: Int) {
-        if (mPos != position) {
-            mPos = position
+        val media = getCurrentMedia()
+        if (media.isEmpty()) {
+            mPos = -1
+            return
+        }
+
+        val safePosition = position.coerceIn(0, media.lastIndex)
+        if (mPos != safePosition) {
+            mPos = safePosition
             updateActionbarTitle()
             refreshMenuItems()
             scheduleSwipe()

@@ -16,13 +16,15 @@ import org.fossify.gallery.helpers.SHOULD_INIT_FRAGMENT
 import org.fossify.gallery.models.Medium
 
 class MyPagerAdapter(val activity: ViewPagerActivity, fm: FragmentManager, val media: MutableList<Medium>) : FragmentStatePagerAdapter(fm) {
-    private val fragments = HashMap<Int, ViewPagerFragment>()
+    // Positions are not stable when a medium is deleted. Keep the live fragments by identity and
+    // resolve the current one against the current media list instead of retaining old positions.
+    private val fragments = LinkedHashSet<ViewPagerFragment>()
     var shouldInitFragment = true
 
     override fun getCount() = media.size
 
     override fun getItem(position: Int): Fragment {
-        val medium = media[position]
+        val medium = media.getOrNull(position) ?: return Fragment()
         val bundle = Bundle()
         bundle.putSerializable(MEDIUM, medium)
         bundle.putBoolean(SHOULD_INIT_FRAGMENT, shouldInitFragment)
@@ -45,7 +47,7 @@ class MyPagerAdapter(val activity: ViewPagerActivity, fm: FragmentManager, val m
         }
 
         val current = media[position]
-        return if (current.path == oldMedium.path && current.getSignature() == oldMedium.getSignature()) {
+        return if (current.path.equals(oldMedium.path, true) && current.getSignature() == oldMedium.getSignature()) {
             position
         } else {
             PagerAdapter.POSITION_NONE
@@ -53,36 +55,34 @@ class MyPagerAdapter(val activity: ViewPagerActivity, fm: FragmentManager, val m
     }
 
     fun updateMedia(newMedia: Collection<Medium>) {
-        val existingFragments = fragments.values.toList()
         media.clear()
         media.addAll(newMedia)
-        fragments.clear()
-        existingFragments.forEach { fragment ->
-            val medium = (fragment.arguments?.getSerializable(MEDIUM) as? Medium) ?: return@forEach
-            val position = media.indexOfFirst { sameMedium(it, medium) }
-            if (position >= 0) {
-                fragments[position] = fragment
-            }
-        }
         notifyDataSetChanged()
     }
 
     override fun instantiateItem(container: ViewGroup, position: Int): Any {
-        val fragment = super.instantiateItem(container, position) as ViewPagerFragment
+        val item = super.instantiateItem(container, position)
+        val fragment = item as? ViewPagerFragment ?: return item
 
         // getItem() might not be called if the activity is recreated, so the listener must be set here
         fragment.listener = activity
 
-        fragments[position] = fragment
-        return fragment
+        fragments.add(fragment)
+        return item
     }
 
     override fun destroyItem(container: ViewGroup, position: Int, any: Any) {
-        fragments.remove(position)
+        (any as? ViewPagerFragment)?.let { fragments.remove(it) }
         super.destroyItem(container, position, any)
     }
 
-    fun getCurrentFragment(position: Int) = fragments[position]
+    fun getCurrentFragment(position: Int): ViewPagerFragment? {
+        val target = media.getOrNull(position) ?: return null
+        return fragments.firstOrNull { fragment ->
+            val medium = fragment.arguments?.getSerializable(MEDIUM) as? Medium
+            medium != null && sameMedium(medium, target)
+        }
+    }
 
     private fun sameMedium(first: Medium, second: Medium): Boolean {
         return if (first.mediaStoreId != 0L && second.mediaStoreId != 0L) {
@@ -93,7 +93,7 @@ class MyPagerAdapter(val activity: ViewPagerActivity, fm: FragmentManager, val m
     }
 
     fun toggleFullscreen(isFullscreen: Boolean) {
-        for ((pos, fragment) in fragments) {
+        for (fragment in fragments) {
             fragment.fullscreenToggled(isFullscreen)
         }
     }
