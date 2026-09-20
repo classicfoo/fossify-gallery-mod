@@ -1002,8 +1002,27 @@ fun Context.getCachedMedia(
     path: String,
     getVideosOnly: Boolean = false,
     getImagesOnly: Boolean = false,
+    callback: (ArrayList<ThumbnailItem>) -> Unit
+) {
+    getCachedMediaInternal(path, getVideosOnly, getImagesOnly, callback, null)
+}
+
+fun Context.getCachedMedia(
+    path: String,
+    getVideosOnly: Boolean = false,
+    getImagesOnly: Boolean = false,
     callback: (ArrayList<ThumbnailItem>) -> Unit,
-    validatedCallback: ((ArrayList<ThumbnailItem>) -> Unit)? = null
+    validatedCallback: ((ArrayList<ThumbnailItem>) -> Unit)?
+) {
+    getCachedMediaInternal(path, getVideosOnly, getImagesOnly, callback, validatedCallback)
+}
+
+private fun Context.getCachedMediaInternal(
+    path: String,
+    getVideosOnly: Boolean = false,
+    getImagesOnly: Boolean = false,
+    callback: (ArrayList<ThumbnailItem>) -> Unit,
+    validatedCallback: ((ArrayList<ThumbnailItem>) -> Unit)?
 ) {
     ensureBackgroundThread {
         val mediaFetcher = MediaFetcher(this)
