@@ -421,6 +421,10 @@ class Config(context: Context) : BaseConfig(context) {
         get() = prefs.getBoolean(USE_RECYCLE_BIN, true)
         set(useRecycleBin) = prefs.edit().putBoolean(USE_RECYCLE_BIN, useRecycleBin).apply()
 
+    var recycleBinRetentionDays: Int
+        get() = prefs.getInt(RECYCLE_BIN_RETENTION, DEFAULT_RECYCLE_BIN_RETENTION)
+        set(recycleBinRetentionDays) = prefs.edit().putInt(RECYCLE_BIN_RETENTION, recycleBinRetentionDays).apply()
+
     var bottomActions: Boolean
         get() = prefs.getBoolean(BOTTOM_ACTIONS, true)
         set(bottomActions) = prefs.edit().putBoolean(BOTTOM_ACTIONS, bottomActions).apply()

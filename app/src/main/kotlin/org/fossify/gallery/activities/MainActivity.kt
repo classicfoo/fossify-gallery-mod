@@ -125,10 +125,10 @@ import org.fossify.gallery.helpers.GROUP_BY_LAST_MODIFIED_MONTHLY
 import org.fossify.gallery.helpers.GROUP_DESCENDING
 import org.fossify.gallery.helpers.LOCATION_INTERNAL
 import org.fossify.gallery.helpers.MAX_COLUMN_COUNT
-import org.fossify.gallery.helpers.MONTH_MILLISECONDS
 import org.fossify.gallery.helpers.MediaFetcher
 import org.fossify.gallery.helpers.PICKED_PATHS
 import org.fossify.gallery.helpers.RECYCLE_BIN
+import org.fossify.gallery.helpers.RECYCLE_BIN_RETENTION_NEVER
 import org.fossify.gallery.helpers.SET_WALLPAPER_INTENT
 import org.fossify.gallery.helpers.SHOW_ALL
 import org.fossify.gallery.helpers.SHOW_TEMP_HIDDEN_DURATION
@@ -1642,13 +1642,17 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
     }
 
     private fun checkRecycleBinItems() {
-        if (config.useRecycleBin && config.lastBinCheck < System.currentTimeMillis() - DAY_SECONDS * 1000) {
-            config.lastBinCheck = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        val retentionDays = config.recycleBinRetentionDays
+        if (config.useRecycleBin && retentionDays > RECYCLE_BIN_RETENTION_NEVER &&
+            config.lastBinCheck < now - DAY_SECONDS * 1000L
+        ) {
+            config.lastBinCheck = now
             Handler().postDelayed({
                 ensureBackgroundThread {
                     try {
                         val filesToDelete = mediaDB.getOldRecycleBinItems(
-                            System.currentTimeMillis() - MONTH_MILLISECONDS
+                            System.currentTimeMillis() - retentionDays.toLong() * DAY_SECONDS * 1000L
                         )
                         filesToDelete.forEach {
                             if (File(it.path.replaceFirst(RECYCLE_BIN, recycleBinPath)).delete()) {

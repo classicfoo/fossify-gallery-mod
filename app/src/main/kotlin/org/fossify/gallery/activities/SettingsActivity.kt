@@ -101,6 +101,7 @@ class SettingsActivity : SimpleActivity() {
         setupSkipDeleteConfirmation()
         setupManageBottomActions()
         setupUseRecycleBin()
+        setupRecycleBinRetention()
         setupShowRecycleBin()
         setupShowRecycleBinLast()
         setupEmptyRecycleBin()
@@ -712,6 +713,38 @@ class SettingsActivity : SimpleActivity() {
         }
     }
 
+    private fun setupRecycleBinRetention() {
+        binding.settingsRecycleBinRetention.text = getRecycleBinRetentionText()
+        binding.settingsRecycleBinRetentionHolder.setOnClickListener {
+            val items = arrayListOf(
+                RadioItem(RECYCLE_BIN_RETENTION_ONE_DAY, getString(R.string.recycle_bin_retention_one_day)),
+                RadioItem(RECYCLE_BIN_RETENTION_SEVEN_DAYS, getString(R.string.recycle_bin_retention_seven_days)),
+                RadioItem(RECYCLE_BIN_RETENTION_THIRTY_DAYS, getString(R.string.recycle_bin_retention_thirty_days)),
+                RadioItem(RECYCLE_BIN_RETENTION_NINETY_DAYS, getString(R.string.recycle_bin_retention_ninety_days)),
+                RadioItem(RECYCLE_BIN_RETENTION_365_DAYS, getString(R.string.recycle_bin_retention_365_days)),
+                RadioItem(RECYCLE_BIN_RETENTION_NEVER, getString(R.string.recycle_bin_retention_never))
+            )
+
+            RadioGroupDialog(this@SettingsActivity, items, config.recycleBinRetentionDays) {
+                config.recycleBinRetentionDays = it as Int
+                config.lastBinCheck = 0L
+                binding.settingsRecycleBinRetention.text = getRecycleBinRetentionText()
+            }
+        }
+    }
+
+    private fun getRecycleBinRetentionText() = getString(
+        when (config.recycleBinRetentionDays) {
+            RECYCLE_BIN_RETENTION_ONE_DAY -> R.string.recycle_bin_retention_one_day
+            RECYCLE_BIN_RETENTION_SEVEN_DAYS -> R.string.recycle_bin_retention_seven_days
+            RECYCLE_BIN_RETENTION_THIRTY_DAYS -> R.string.recycle_bin_retention_thirty_days
+            RECYCLE_BIN_RETENTION_NINETY_DAYS -> R.string.recycle_bin_retention_ninety_days
+            RECYCLE_BIN_RETENTION_365_DAYS -> R.string.recycle_bin_retention_365_days
+            RECYCLE_BIN_RETENTION_NEVER -> R.string.recycle_bin_retention_never
+            else -> R.string.recycle_bin_retention_thirty_days
+        }
+    )
+
     private fun setupShowRecycleBin() {
         binding.settingsShowRecycleBin.isChecked = config.showRecycleBinAtFolders
         binding.settingsShowRecycleBinHolder.setOnClickListener {
@@ -733,6 +766,7 @@ class SettingsActivity : SimpleActivity() {
     }
 
     private fun updateRecycleBinButtons() {
+        binding.settingsRecycleBinRetentionHolder.beVisibleIf(config.useRecycleBin)
         binding.settingsShowRecycleBinLastHolder.beVisibleIf(config.useRecycleBin && config.showRecycleBinAtFolders)
         binding.settingsEmptyRecycleBinHolder.beVisibleIf(config.useRecycleBin)
         binding.settingsShowRecycleBinHolder.beVisibleIf(config.useRecycleBin)
@@ -952,6 +986,7 @@ class SettingsActivity : SimpleActivity() {
                 put(BOTTOM_ACTIONS, config.bottomActions)
                 put(VISIBLE_BOTTOM_ACTIONS, config.visibleBottomActions)
                 put(USE_RECYCLE_BIN, config.useRecycleBin)
+                put(RECYCLE_BIN_RETENTION, config.recycleBinRetentionDays)
                 put(SHOW_RECYCLE_BIN_AT_FOLDERS, config.showRecycleBinAtFolders)
                 put(SHOW_RECYCLE_BIN_LAST, config.showRecycleBinLast)
                 put(SORT_ORDER, config.sorting)
@@ -1098,6 +1133,10 @@ class SettingsActivity : SimpleActivity() {
                 BOTTOM_ACTIONS -> config.bottomActions = value.toBoolean()
                 VISIBLE_BOTTOM_ACTIONS -> config.visibleBottomActions = value.toInt()
                 USE_RECYCLE_BIN -> config.useRecycleBin = value.toBoolean()
+                RECYCLE_BIN_RETENTION -> {
+                    config.recycleBinRetentionDays = value.toInt()
+                    config.lastBinCheck = 0L
+                }
                 SHOW_RECYCLE_BIN_AT_FOLDERS -> config.showRecycleBinAtFolders = value.toBoolean()
                 SHOW_RECYCLE_BIN_LAST -> config.showRecycleBinLast = value.toBoolean()
                 SORT_ORDER -> config.sorting = value.toInt()
