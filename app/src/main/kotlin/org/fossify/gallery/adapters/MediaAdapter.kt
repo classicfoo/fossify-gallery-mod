@@ -12,6 +12,8 @@ import android.widget.Toast
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.view.allViews
 import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.qtalk.recyclerviewfastscroller.RecyclerViewFastScroller
 import org.fossify.commons.activities.BaseSimpleActivity
@@ -84,6 +86,7 @@ import org.fossify.gallery.helpers.RECYCLE_BIN
 import org.fossify.gallery.helpers.ROUNDED_CORNERS_BIG
 import org.fossify.gallery.helpers.ROUNDED_CORNERS_NONE
 import org.fossify.gallery.helpers.ROUNDED_CORNERS_SMALL
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 import org.fossify.gallery.helpers.SHOW_ALL
 import org.fossify.gallery.helpers.SHOW_FAVORITES
 import org.fossify.gallery.helpers.SHOW_RECYCLE_BIN
@@ -93,6 +96,7 @@ import org.fossify.gallery.interfaces.MediaOperationsListener
 import org.fossify.gallery.models.Medium
 import org.fossify.gallery.models.ThumbnailItem
 import org.fossify.gallery.models.ThumbnailSection
+import java.util.Locale
 
 class MediaAdapter(
     activity: BaseSimpleActivity,
@@ -101,9 +105,9 @@ class MediaAdapter(
     val isAGetIntent: Boolean,
     val allowMultiplePicks: Boolean,
     val path: String,
-    recyclerView: MyRecyclerView,
+    private val mediaRecyclerView: MyRecyclerView,
     itemClick: (Any) -> Unit
-) : MyRecyclerViewAdapter(activity, recyclerView, itemClick),
+) : MyRecyclerViewAdapter(activity, mediaRecyclerView, itemClick),
     RecyclerViewFastScroller.OnPopupTextUpdate {
 
     private val ITEM_SECTION = 0
@@ -127,6 +131,7 @@ class MediaAdapter(
     var timeFormat = activity.getTimeFormat()
 
     init {
+        setHasStableIds(true)
         setupDragListener(true)
     }
 
@@ -167,6 +172,21 @@ class MediaAdapter(
     }
 
     override fun getItemCount() = media.size
+
+    override fun getItemId(position: Int): Long {
+        return when (val item = media.getOrNull(position)) {
+            is Medium -> {
+                if (item.mediaStoreId != 0L) {
+                    item.mediaStoreId
+                } else {
+                    item.path.lowercase(Locale.getDefault()).hashCode().toLong()
+                }
+            }
+
+            is ThumbnailSection -> Long.MIN_VALUE + item.title.hashCode().toLong()
+            else -> RecyclerView.NO_ID
+        }
+    }
 
     override fun getItemViewType(position: Int): Int {
         val tmbItem = media[position]
@@ -376,14 +396,35 @@ class MediaAdapter(
     }
 
     private fun toggleFavorites(add: Boolean) {
+        val selectedItems = ArrayList(getSelectedItems())
+        if (selectedItems.isEmpty()) {
+            return
+        }
+
+        val originalStates = selectedItems.associate { it.path.lowercase(Locale.getDefault()) to it.isFavorite }
+        selectedItems.forEach { medium ->
+            medium.isFavorite = add
+            media.indexOfFirst { (it as? Medium)?.path.equals(medium.path, true) }
+                .takeIf { it >= 0 }
+                ?.let { notifyItemChanged(it) }
+        }
+        finishActMode()
+
         ensureBackgroundThread {
-            getSelectedItems().forEach {
-                it.isFavorite = add
-                activity.updateFavorite(it.path, add)
-            }
+            val failed = selectedItems.filterNot { activity.updateFavorite(it.path, add) }
             activity.runOnUiThread {
-                listener?.refreshItems()
-                finishActMode()
+                if (failed.isNotEmpty()) {
+                    failed.forEach { medium ->
+                        medium.isFavorite = originalStates[medium.path.lowercase(Locale.getDefault())] ?: !add
+                    }
+                    notifyDataSetChanged()
+                    listener?.refreshItems()
+                } else {
+                    MediaSnapshotCoordinator.upsert(activity.applicationContext, selectedItems)
+                    if (path == FAVORITES && !add) {
+                        listener?.refreshItems()
+                    }
+                }
             }
         }
     }
@@ -609,23 +650,30 @@ class MediaAdapter(
                 }
 
                 val operationsListener = listener ?: return@checkManageMediaOrHandleSAFDialogSdk30
+                val originalMedia = ArrayList(media)
+                val removedPaths = removeMedia.mapTo(HashSet()) { it.path }
+                val positions = media.mapIndexedNotNull { position, item ->
+                    (item as? Medium)?.path?.takeIf { it in removedPaths }?.let { position }
+                }.sortedDescending().toCollection(ArrayList())
+
+                // The permissions and SAF decisions have completed, so the operation is now
+                // safe to present optimistically. The original list remains available for a
+                // precise rollback if the platform operation fails.
+                media.removeAll { (it as? Medium)?.path in removedPaths }
+                operationsListener.updateMediaGridDecoration(media)
+                if (positions.isEmpty()) {
+                    finishActMode()
+                } else {
+                    removeSelectedItems(positions)
+                }
+
                 operationsListener.tryDeleteFiles(fileDirItems, skipRecycleBin) { wasSuccess ->
                     activity.runOnUiThread {
                         if (!wasSuccess) {
+                            updateMedia(originalMedia, forceAdapterRefresh = true)
+                            operationsListener.updateMediaGridDecoration(media)
+                            operationsListener.refreshItems()
                             return@runOnUiThread
-                        }
-
-                        val removedPaths = removeMedia.mapTo(HashSet()) { it.path }
-                        val positions = media.mapIndexedNotNull { position, item ->
-                            (item as? Medium)?.path?.takeIf { it in removedPaths }?.let { position }
-                        }.sortedDescending().toCollection(ArrayList())
-
-                        media.removeAll { (it as? Medium)?.path in removedPaths }
-                        operationsListener.updateMediaGridDecoration(media)
-                        if (positions.isEmpty()) {
-                            finishActMode()
-                        } else {
-                            removeSelectedItems(positions)
                         }
                     }
                 }
@@ -641,9 +689,42 @@ class MediaAdapter(
 
     private fun getItemWithKey(key: Int): Medium? = media.firstOrNull { (it as? Medium)?.path?.hashCode() == key } as? Medium
 
+    private data class ScrollAnchor(val path: String, val offset: Int)
+
+    private fun captureScrollAnchor(): ScrollAnchor? {
+        val layoutManager = mediaRecyclerView.layoutManager as? LinearLayoutManager ?: return null
+        val first = layoutManager.findFirstVisibleItemPosition()
+        val last = layoutManager.findLastVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION) {
+            return null
+        }
+
+        for (position in first..last) {
+            val medium = media.getOrNull(position) as? Medium ?: continue
+            val view = layoutManager.findViewByPosition(position) ?: continue
+            return ScrollAnchor(medium.path, layoutManager.getDecoratedStart(view))
+        }
+        return null
+    }
+
+    private fun restoreScrollAnchor(anchor: ScrollAnchor?) {
+        if (anchor == null) {
+            return
+        }
+
+        mediaRecyclerView.post {
+            val layoutManager = mediaRecyclerView.layoutManager as? LinearLayoutManager ?: return@post
+            val position = media.indexOfFirst { (it as? Medium)?.path.equals(anchor.path, true) }
+            if (position >= 0) {
+                layoutManager.scrollToPositionWithOffset(position, anchor.offset)
+            }
+        }
+    }
+
     fun updateMedia(newMedia: ArrayList<ThumbnailItem>, forceAdapterRefresh: Boolean = false) {
         val previous = media
         val next = ArrayList(newMedia)
+        val scrollAnchor = captureScrollAnchor()
         val changes = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize() = previous.size
             override fun getNewListSize() = next.size
@@ -651,7 +732,13 @@ class MediaAdapter(
                 val old = previous[oldItemPosition]
                 val new = next[newItemPosition]
                 return when {
-                    old is Medium && new is Medium -> old.path == new.path && old.type == new.type
+                    old is Medium && new is Medium -> {
+                        if (old.mediaStoreId != 0L && new.mediaStoreId != 0L) {
+                            old.mediaStoreId == new.mediaStoreId
+                        } else {
+                            old.path.equals(new.path, true)
+                        }
+                    }
                     old is ThumbnailSection && new is ThumbnailSection -> old.title == new.title
                     else -> false
                 }
@@ -662,13 +749,15 @@ class MediaAdapter(
                 return if (old is Medium && new is Medium) {
                     old.name == new.name && old.isFavorite == new.isFavorite &&
                         old.videoDuration == new.videoDuration && old.size == new.size &&
-                        old.modified == new.modified &&
+                        old.modified == new.modified && old.taken == new.taken &&
+                        old.path.equals(new.path, true) && old.mediaStoreId == new.mediaStoreId &&
                         !(forceAdapterRefresh && new.path in rotatedImagePaths)
                 } else old == new
             }
         }, false)
         media = next
         changes.dispatchUpdatesTo(this)
+        restoreScrollAnchor(scrollAnchor)
     }
 
     fun updateDisplayFilenames(displayFilenames: Boolean) {

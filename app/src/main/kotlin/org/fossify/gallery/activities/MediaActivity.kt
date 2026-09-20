@@ -100,6 +100,7 @@ import org.fossify.gallery.helpers.GridSpacingItemDecoration
 import org.fossify.gallery.helpers.IS_IN_RECYCLE_BIN
 import org.fossify.gallery.helpers.MAX_COLUMN_COUNT
 import org.fossify.gallery.helpers.MediaFetcher
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 import org.fossify.gallery.helpers.PATH
 import org.fossify.gallery.helpers.PICKED_PATHS
 import org.fossify.gallery.helpers.RECYCLE_BIN
@@ -178,6 +179,8 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     companion object {
         var mMedia = ArrayList<ThumbnailItem>()
+        private var mSnapshotPath = ""
+        private var mSnapshotShowAll = false
     }
 
     private data class FastMediaChanges(
@@ -185,6 +188,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         val changedPaths: HashSet<String>,
         val changedMediaStoreIds: HashSet<Long>
     )
+
+    private fun hasMatchingInMemorySnapshot(): Boolean {
+        return mMedia.isNotEmpty() && mSnapshotPath.equals(mPath, true) && mSnapshotShowAll == mShowAll
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -213,6 +220,16 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         setupOptionsMenu()
         refreshMenuItems()
         storeStateVariables()
+
+        // Reuse the in-process snapshot when this activity is recreated in the same process.
+        // The Room snapshot is still loaded below for a cold process, but returning to a folder
+        // never needs to wait for another database round-trip before showing its existing rows.
+        if (hasMatchingInMemorySnapshot()) {
+            mLoadedInitialPhotos = true
+            setupLayoutManager()
+            setupAdapter()
+        }
+
         setupEdgeToEdge(
             padTopSystem = listOf(binding.mediaMenu),
             padBottomImeAndSystem = listOf(binding.mediaGrid)
@@ -1069,6 +1086,8 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 mIsGettingMedia = false
             }
             mMedia = media
+            mSnapshotPath = mPath
+            mSnapshotShowAll = mShowAll
         }
 
         if (!isFromCache) {
@@ -1099,12 +1118,13 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             mLatestMediaDateId = getLatestMediaByDateId()
             val mediaToInsert = mMedia
                 .filter { it is Medium && it.deletedTS == 0L }.map { it as Medium }
-            Thread {
-                try {
-                    mediaDB.insertAll(mediaToInsert)
-                } catch (e: Exception) {
-                }
-            }.start()
+            if (mShowAll) {
+                MediaSnapshotCoordinator.replaceLibrary(applicationContext, mediaToInsert)
+            } else if (mPath != FAVORITES && mPath != RECYCLE_BIN) {
+                MediaSnapshotCoordinator.replaceFolder(applicationContext, mPath, mediaToInsert)
+            } else {
+                MediaSnapshotCoordinator.upsert(applicationContext, mediaToInsert)
+            }
         }
         return true
     }
@@ -1301,14 +1321,11 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         setupAdapter(forceAdapterRefresh = true)
 
         if (removedPaths.isNotEmpty() || mediaToAdd.isNotEmpty()) {
-            ensureBackgroundThread {
-                try {
-                    removedPaths.forEach { mediaDB.deleteMediumPath(it) }
-                    if (mediaToAdd.isNotEmpty()) {
-                        mediaDB.insertAll(mediaToAdd)
-                    }
-                } catch (ignored: Exception) {
-                }
+            if (removedPaths.isNotEmpty()) {
+                MediaSnapshotCoordinator.remove(applicationContext, removedPaths)
+            }
+            if (mediaToAdd.isNotEmpty()) {
+                MediaSnapshotCoordinator.upsert(applicationContext, mediaToAdd)
             }
         }
     }

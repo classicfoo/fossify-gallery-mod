@@ -19,6 +19,7 @@ import org.fossify.gallery.extensions.addPathToDB
 import org.fossify.gallery.extensions.config
 import org.fossify.gallery.extensions.updateDirectoryPath
 import org.fossify.gallery.helpers.getPermissionsToRequest
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 
 open class SimpleActivity : BaseSimpleActivity() {
 
@@ -111,6 +112,7 @@ open class SimpleActivity : BaseSimpleActivity() {
     override fun onPause() {
         isActivityResumed = false
         mediaRefreshHandler.removeCallbacks(mediaRefreshRunnable)
+        MediaSnapshotCoordinator.flush(applicationContext)
         super.onPause()
     }
 
@@ -118,6 +120,7 @@ open class SimpleActivity : BaseSimpleActivity() {
         mediaRefreshHandler.removeCallbacksAndMessages(null)
         pendingMediaUris.clear()
         hasPendingUnknownMediaChange = false
+        MediaSnapshotCoordinator.flush(applicationContext)
         super.onDestroy()
     }
 

@@ -90,6 +90,7 @@ import org.fossify.gallery.helpers.LOCATION_INTERNAL
 import org.fossify.gallery.helpers.LOCATION_OTG
 import org.fossify.gallery.helpers.LOCATION_SD
 import org.fossify.gallery.helpers.MediaFetcher
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 import org.fossify.gallery.helpers.MyWidgetProvider
 import org.fossify.gallery.helpers.PicassoRoundedCornersTransformation
 import org.fossify.gallery.helpers.RECYCLE_BIN
@@ -544,16 +545,7 @@ fun Context.rescanFolderMediaSync(path: String) {
             ensureBackgroundThread {
                 val media = newMedia.filterIsInstance<Medium>() as ArrayList<Medium>
                 try {
-                    mediaDB.insertAll(media)
-
-                    cached.forEach { thumbnailItem ->
-                        if (!newMedia.contains(thumbnailItem)) {
-                            val mediumPath = (thumbnailItem as? Medium)?.path
-                            if (mediumPath != null) {
-                                deleteDBPath(mediumPath)
-                            }
-                        }
-                    }
+                    MediaSnapshotCoordinator.replaceFolder(applicationContext, path, media)
                 } catch (ignored: Exception) {
                 }
             }
@@ -1176,15 +1168,18 @@ fun Context.getFavoriteFromPath(path: String): Favorite {
     return Favorite(null, path, path.getFilenameFromPath(), path.getParentPath())
 }
 
-fun Context.updateFavorite(path: String, isFavorite: Boolean) {
+fun Context.updateFavorite(path: String, isFavorite: Boolean): Boolean {
     try {
         if (isFavorite) {
             favoritesDB.insert(getFavoriteFromPath(path))
         } else {
             favoritesDB.deleteFavoritePath(path)
         }
+        mediaDB.updateFavorite(path, isFavorite)
+        return true
     } catch (e: Exception) {
         toast(org.fossify.commons.R.string.unknown_error_occurred)
+        return false
     }
 }
 
@@ -1317,7 +1312,7 @@ fun Context.addPathToDB(path: String) {
 
             medium.isFavorite = isFavorite
 
-            mediaDB.insert(medium)
+            MediaSnapshotCoordinator.upsert(applicationContext, arrayListOf(medium))
         } catch (ignored: Exception) {
         }
     }
