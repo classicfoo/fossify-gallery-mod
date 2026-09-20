@@ -47,6 +47,7 @@ import org.fossify.gallery.dialogs.ResizeWithPathDialog
 import org.fossify.gallery.helpers.DIRECTORY
 import org.fossify.gallery.helpers.RECYCLE_BIN
 import org.fossify.gallery.helpers.TEMP_FOLDER_NAME
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 import org.fossify.gallery.models.DateTaken
 import java.io.*
 import java.text.SimpleDateFormat
@@ -387,6 +388,7 @@ fun BaseSimpleActivity.movePathsInRecycleBin(paths: ArrayList<String>, callback:
 
                     if (fileDocument.getItemSize(true) == copiedSize && getDoesFilePathExist(destination)) {
                         mediaDB.updateDeleted("$RECYCLE_BIN$source", System.currentTimeMillis(), source)
+                        MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(source))
                         pathsCnt--
                     }
                 } catch (e: Exception) {
@@ -403,6 +405,7 @@ fun BaseSimpleActivity.movePathsInRecycleBin(paths: ArrayList<String>, callback:
                 try {
                     if (file.copyRecursively(internalFile, true)) {
                         mediaDB.updateDeleted("$RECYCLE_BIN$source", System.currentTimeMillis(), source)
+                        MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(source))
                         pathsCnt--
 
                         if (config.keepLastModified && lastModified != 0L) {

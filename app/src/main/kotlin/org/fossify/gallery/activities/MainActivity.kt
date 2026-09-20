@@ -126,6 +126,7 @@ import org.fossify.gallery.helpers.GROUP_DESCENDING
 import org.fossify.gallery.helpers.LOCATION_INTERNAL
 import org.fossify.gallery.helpers.MAX_COLUMN_COUNT
 import org.fossify.gallery.helpers.MediaFetcher
+import org.fossify.gallery.helpers.MediaSnapshotCoordinator
 import org.fossify.gallery.helpers.PICKED_PATHS
 import org.fossify.gallery.helpers.RECYCLE_BIN
 import org.fossify.gallery.helpers.RECYCLE_BIN_RETENTION_NEVER
@@ -1255,7 +1256,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 if (!directory.isRecycleBin() && !directory.areFavorites()) {
                     Thread {
                         try {
-                            mediaDB.insertAll(curMedia)
+                            MediaSnapshotCoordinator.replaceFolder(applicationContext, directory.path, curMedia)
                         } catch (ignored: Exception) {
                         }
                     }.start()
@@ -1273,7 +1274,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                                 }
                             }
                         }
-                        mediaDB.deleteMedia(*mediaToDelete.toTypedArray())
+                        MediaSnapshotCoordinator.remove(applicationContext, mediaToDelete.map { it.path })
                     }
                 }
             }
@@ -1369,7 +1370,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                 try {
                     directoryDB.insert(newDir)
                     if (folder != RECYCLE_BIN && folder != FAVORITES) {
-                        mediaDB.insertAll(newMedia)
+                        MediaSnapshotCoordinator.replaceFolder(applicationContext, folder, newMedia)
                     }
                 } catch (ignored: Exception) {
                 }
@@ -1656,7 +1657,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
                         )
                         filesToDelete.forEach {
                             if (File(it.path.replaceFirst(RECYCLE_BIN, recycleBinPath)).delete()) {
-                                mediaDB.deleteMediumPath(it.path)
+                                MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(it.path))
                             }
                         }
                     } catch (e: Exception) {
