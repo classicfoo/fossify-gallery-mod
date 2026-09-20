@@ -531,12 +531,13 @@ class MediaAdapter(
 
     private fun checkDeleteConfirmation() {
         activity.handleMediaManagementPrompt {
+            val skipRecycleBin = config.skipRecycleBinForUnconfirmedDelete
             if (config.isDeletePasswordProtectionOn) {
                 activity.handleDeletePasswordProtection {
-                    deleteFiles(config.tempSkipRecycleBin)
+                    deleteFiles(skipRecycleBin)
                 }
             } else if (config.tempSkipDeleteConfirmation || config.skipDeleteConfirmation) {
-                deleteFiles(config.tempSkipRecycleBin)
+                deleteFiles(skipRecycleBin)
             } else {
                 askConfirmDelete()
             }

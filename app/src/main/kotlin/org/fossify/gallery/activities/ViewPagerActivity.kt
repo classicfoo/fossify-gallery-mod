@@ -1239,12 +1239,13 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
         }
 
         handleMediaManagementPrompt {
+            val skipRecycleBin = config.skipRecycleBinForUnconfirmedDelete
             if (config.isDeletePasswordProtectionOn) {
                 handleDeletePasswordProtection {
-                    deleteConfirmed(config.tempSkipRecycleBin)
+                    deleteConfirmed(skipRecycleBin)
                 }
             } else if (config.tempSkipDeleteConfirmation || config.skipDeleteConfirmation) {
-                deleteConfirmed(config.tempSkipRecycleBin)
+                deleteConfirmed(skipRecycleBin)
             } else {
                 askConfirmDelete()
             }

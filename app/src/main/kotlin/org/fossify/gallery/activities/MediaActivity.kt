@@ -181,7 +181,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             mAllowPickingMultiple = getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
         }
 
-        binding.mediaRefreshLayout.setOnRefreshListener { getMedia() }
+        binding.mediaRefreshLayout.setOnRefreshListener { refreshMedia() }
         try {
             mPath = intent.getStringExtra(DIRECTORY) ?: ""
         } catch (e: Exception) {
@@ -592,10 +592,17 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private fun showFilterMediaDialog() {
         FilterMediaDialog(this) {
             mLoadedInitialPhotos = false
-            binding.mediaRefreshLayout.isRefreshing = true
             binding.mediaGrid.adapter = null
-            getMedia()
+            refreshMedia()
         }
+    }
+
+    private fun refreshMedia() {
+        // SwipeRefreshLayout's built-in spinner is a second, theme-colored loader. The
+        // centered Material indicator is the gallery's single loading/progress indicator.
+        binding.mediaRefreshLayout.isRefreshing = false
+        binding.loadingIndicator.show()
+        getMedia()
     }
 
     private fun emptyRecycleBin() {
@@ -682,13 +689,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 mIsGetVideoIntent && !mIsGetImageIntent,
                 mIsGetImageIntent && !mIsGetVideoIntent
             ) {
-                if (it.isEmpty()) {
-                    runOnUiThread {
-                        if (loadGeneration == mMediaLoadGeneration && mAuthoritativeMediaGeneration < loadGeneration) {
-                            binding.mediaRefreshLayout.isRefreshing = true
-                        }
-                    }
-                } else {
+                if (it.isNotEmpty()) {
                     gotMedia(it, true, loadGeneration)
                 }
             }

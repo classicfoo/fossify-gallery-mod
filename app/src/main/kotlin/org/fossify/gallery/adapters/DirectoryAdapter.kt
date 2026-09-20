@@ -679,7 +679,7 @@ class DirectoryAdapter(
                 }
 
                 val fileDirItem = getFirstSelectedItem() ?: return
-                val baseString = if (!config.useRecycleBin || config.tempSkipRecycleBin || (isOneItemSelected() && fileDirItem.areFavorites())) {
+                val baseString = if (!config.useRecycleBin || config.skipRecycleBinForUnconfirmedDelete || (isOneItemSelected() && fileDirItem.areFavorites())) {
                     org.fossify.commons.R.string.deletion_confirmation
                 } else {
                     org.fossify.commons.R.string.move_to_recycle_bin_confirmation

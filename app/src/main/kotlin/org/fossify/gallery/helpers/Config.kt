@@ -401,6 +401,14 @@ class Config(context: Context) : BaseConfig(context) {
         get() = prefs.getBoolean(TEMP_SKIP_RECYCLE_BIN, false)
         set(tempSkipRecycleBin) = prefs.edit().putBoolean(TEMP_SKIP_RECYCLE_BIN, tempSkipRecycleBin).apply()
 
+    /**
+     * The recycle-bin bypass is only valid when it was explicitly remembered
+     * together with the temporary no-confirmation choice. The persistent
+     * "skip delete confirmation" setting must still use the recycle bin.
+     */
+    val skipRecycleBinForUnconfirmedDelete: Boolean
+        get() = tempSkipDeleteConfirmation && tempSkipRecycleBin
+
     var wereFavoritesPinned: Boolean
         get() = prefs.getBoolean(WERE_FAVORITES_PINNED, false)
         set(wereFavoritesPinned) = prefs.edit().putBoolean(WERE_FAVORITES_PINNED, wereFavoritesPinned).apply()

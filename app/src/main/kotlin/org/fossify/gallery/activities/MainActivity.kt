@@ -763,7 +763,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             }
 
             else -> {
-                val baseString = if (config.useRecycleBin && !config.tempSkipRecycleBin) {
+                val baseString = if (config.useRecycleBin && !config.skipRecycleBinForUnconfirmedDelete) {
                     org.fossify.commons.R.plurals.moving_items_into_bin
                 } else {
                     org.fossify.commons.R.plurals.delete_items
@@ -793,7 +793,7 @@ class MainActivity : SimpleActivity(), DirectoryOperationsListener {
             }?.mapTo(itemsToDelete) { it.toFileDirItem(applicationContext) }
         }
 
-        if (config.useRecycleBin && !config.tempSkipRecycleBin) {
+        if (config.useRecycleBin && !config.skipRecycleBinForUnconfirmedDelete) {
             val pathsToDelete = ArrayList<String>()
             itemsToDelete.mapTo(pathsToDelete) { it.path }
 
