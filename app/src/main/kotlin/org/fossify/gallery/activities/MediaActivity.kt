@@ -139,6 +139,8 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private var mLoadedInitialPhotos = false
     private var mShowLoadingIndicator = true
     private var mWasFullscreenViewOpen = false
+    private var mStartAtNewestOnFirstLoad = false
+    private var mInitialPositionApplied = false
     private var mLastSearchedText = ""
     private var mLatestMediaId = 0L
     private var mLatestMediaDateId = 0L
@@ -160,6 +162,20 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     private val binding by viewBinding(ActivityMediaBinding::inflate)
 
+    private val mInitialPositionRunnable = Runnable {
+        if (!mStartAtNewestOnFirstLoad || mInitialPositionApplied || isFinishing || isDestroyed) {
+            return@Runnable
+        }
+
+        if (binding.mediaGrid.adapter == null) {
+            return@Runnable
+        }
+
+        val layoutManager = binding.mediaGrid.layoutManager as? MyGridLayoutManager ?: return@Runnable
+        layoutManager.scrollToPositionWithOffset(0, 0)
+        mInitialPositionApplied = true
+    }
+
     companion object {
         var mMedia = ArrayList<ThumbnailItem>()
     }
@@ -173,6 +189,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(binding.root)
+        // A brand-new file grid should begin at the first item in its configured sort order.
+        // Keep RecyclerView's saved position for rotation/process recreation and for an
+        // existing MediaActivity returning from the fullscreen viewer.
+        mStartAtNewestOnFirstLoad = savedInstanceState == null
 
         intent.apply {
             mIsGetImageIntent = getBooleanExtra(GET_IMAGE_INTENT, false)
@@ -284,6 +304,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun onPause() {
         super.onPause()
+        binding.mediaGrid.removeCallbacks(mInitialPositionRunnable)
         mMediaReconciliationHandler.removeCallbacksAndMessages(null)
         mMediaLoadGeneration++
         mIsGettingMedia = false
@@ -312,6 +333,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        binding.mediaGrid.removeCallbacks(mInitialPositionRunnable)
         mMediaReconciliationHandler.removeCallbacksAndMessages(null)
         if (config.showAll && !isChangingConfigurations) {
             config.temporarilyShowHidden = false
@@ -550,6 +572,16 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         }
 
         setupScrollDirection()
+        positionAtNewestIfNeeded()
+    }
+
+    private fun positionAtNewestIfNeeded() {
+        if (!mStartAtNewestOnFirstLoad || mInitialPositionApplied) {
+            return
+        }
+
+        binding.mediaGrid.removeCallbacks(mInitialPositionRunnable)
+        binding.mediaGrid.post(mInitialPositionRunnable)
     }
 
     private fun setupScrollDirection() {
@@ -1077,10 +1109,15 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         return true
     }
 
-    override fun tryDeleteFiles(fileDirItems: ArrayList<FileDirItem>, skipRecycleBin: Boolean) {
+    override fun tryDeleteFiles(
+        fileDirItems: ArrayList<FileDirItem>,
+        skipRecycleBin: Boolean,
+        callback: ((wasSuccess: Boolean) -> Unit)?
+    ) {
         val filtered = fileDirItems
             .filter { !getIsPathDirectory(it.path) && it.path.isMediaFile() } as ArrayList
         if (filtered.isEmpty()) {
+            callback?.invoke(false)
             return
         }
 
@@ -1098,9 +1135,10 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
 
             movePathsInRecycleBin(filtered.map { it.path } as ArrayList<String>) {
                 if (it) {
-                    deleteFilteredFiles(filtered)
+                    deleteFilteredFiles(filtered, callback)
                 } else {
                     toast(org.fossify.commons.R.string.unknown_error_occurred)
+                    callback?.invoke(false)
                 }
             }
         } else {
@@ -1110,7 +1148,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 filtered.size
             )
             toast(deletingItems)
-            deleteFilteredFiles(filtered)
+            deleteFilteredFiles(filtered, callback)
         }
     }
 
@@ -1118,10 +1156,14 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         return intent.getBooleanExtra(SKIP_AUTHENTICATION, false)
     }
 
-    private fun deleteFilteredFiles(filtered: ArrayList<FileDirItem>) {
+    private fun deleteFilteredFiles(
+        filtered: ArrayList<FileDirItem>,
+        callback: ((wasSuccess: Boolean) -> Unit)? = null
+    ) {
         deleteFiles(filtered) {
             if (!it) {
                 toast(org.fossify.commons.R.string.unknown_error_occurred)
+                callback?.invoke(false)
                 return@deleteFiles
             }
 
@@ -1134,8 +1176,12 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             mMedia = mediaFetcher.groupMedia(remainingMedia, if (mShowAll) SHOW_ALL else mPath)
 
             runOnUiThread {
-                getMediaAdapter()?.updateMedia(mMedia)
                 handleGridSpacing()
+                if (callback == null) {
+                    getMediaAdapter()?.updateMedia(mMedia)
+                } else {
+                    callback(true)
+                }
             }
 
             ensureBackgroundThread {

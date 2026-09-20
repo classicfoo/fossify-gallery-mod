@@ -252,9 +252,14 @@ class SearchActivity : SimpleActivity(), MediaOperationsListener {
         startAsyncTask(true)
     }
 
-    override fun tryDeleteFiles(fileDirItems: ArrayList<FileDirItem>, skipRecycleBin: Boolean) {
+    override fun tryDeleteFiles(
+        fileDirItems: ArrayList<FileDirItem>,
+        skipRecycleBin: Boolean,
+        callback: ((wasSuccess: Boolean) -> Unit)?
+    ) {
         val filtered = fileDirItems.filter { File(it.path).isFile && it.path.isMediaFile() } as ArrayList
         if (filtered.isEmpty()) {
+            callback?.invoke(false)
             return
         }
 
@@ -264,26 +269,41 @@ class SearchActivity : SimpleActivity(), MediaOperationsListener {
 
             movePathsInRecycleBin(filtered.map { it.path } as ArrayList<String>) {
                 if (it) {
-                    deleteFilteredFiles(filtered)
+                    deleteFilteredFiles(filtered, callback)
                 } else {
                     toast(org.fossify.commons.R.string.unknown_error_occurred)
+                    callback?.invoke(false)
                 }
             }
         } else {
             val deletingItems = resources.getQuantityString(org.fossify.commons.R.plurals.deleting_items, filtered.size, filtered.size)
             toast(deletingItems)
-            deleteFilteredFiles(filtered)
+            deleteFilteredFiles(filtered, callback)
         }
     }
 
-    private fun deleteFilteredFiles(filtered: ArrayList<FileDirItem>) {
+    private fun deleteFilteredFiles(
+        filtered: ArrayList<FileDirItem>,
+        callback: ((wasSuccess: Boolean) -> Unit)? = null
+    ) {
         deleteFiles(filtered) {
             if (!it) {
                 toast(org.fossify.commons.R.string.unknown_error_occurred)
+                callback?.invoke(false)
                 return@deleteFiles
             }
 
-            mAllMedia.removeAll { filtered.map { it.path }.contains((it as? Medium)?.path) }
+            mAllMedia.removeAll { medium ->
+                filtered.any { it.path == (medium as? Medium)?.path }
+            }
+
+            if (callback == null) {
+                getMediaAdapter()?.updateMedia(mAllMedia)
+            } else {
+                callback.let { completion ->
+                    runOnUiThread { completion(true) }
+                }
+            }
 
             ensureBackgroundThread {
                 val useRecycleBin = config.useRecycleBin

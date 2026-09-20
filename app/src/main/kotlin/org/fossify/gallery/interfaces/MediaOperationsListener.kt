@@ -6,7 +6,11 @@ import org.fossify.gallery.models.ThumbnailItem
 interface MediaOperationsListener {
     fun refreshItems()
 
-    fun tryDeleteFiles(fileDirItems: ArrayList<FileDirItem>, skipRecycleBin: Boolean)
+    fun tryDeleteFiles(
+        fileDirItems: ArrayList<FileDirItem>,
+        skipRecycleBin: Boolean,
+        callback: ((wasSuccess: Boolean) -> Unit)? = null
+    )
 
     fun selectedPaths(paths: ArrayList<String>)
 

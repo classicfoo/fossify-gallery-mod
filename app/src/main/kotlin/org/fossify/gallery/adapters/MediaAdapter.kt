@@ -602,17 +602,33 @@ class MediaAdapter(
 
                 val fileDirItems = ArrayList<FileDirItem>(selectedKeys.size)
                 val removeMedia = ArrayList<Medium>(selectedKeys.size)
-                val positions = getSelectedItemPositions()
 
                 selectedItems.forEach { medium ->
                     fileDirItems.add(medium.toFileDirItem())
                     removeMedia.add(medium)
                 }
 
-                media.removeAll(removeMedia)
-                listener?.tryDeleteFiles(fileDirItems, skipRecycleBin)
-                listener?.updateMediaGridDecoration(media)
-                removeSelectedItems(positions)
+                val operationsListener = listener ?: return@checkManageMediaOrHandleSAFDialogSdk30
+                operationsListener.tryDeleteFiles(fileDirItems, skipRecycleBin) { wasSuccess ->
+                    activity.runOnUiThread {
+                        if (!wasSuccess) {
+                            return@runOnUiThread
+                        }
+
+                        val removedPaths = removeMedia.mapTo(HashSet()) { it.path }
+                        val positions = media.mapIndexedNotNull { position, item ->
+                            (item as? Medium)?.path?.takeIf { it in removedPaths }?.let { position }
+                        }.sortedDescending().toCollection(ArrayList())
+
+                        media.removeAll { (it as? Medium)?.path in removedPaths }
+                        operationsListener.updateMediaGridDecoration(media)
+                        if (positions.isEmpty()) {
+                            finishActMode()
+                        } else {
+                            removeSelectedItems(positions)
+                        }
+                    }
+                }
             }
         }
     }

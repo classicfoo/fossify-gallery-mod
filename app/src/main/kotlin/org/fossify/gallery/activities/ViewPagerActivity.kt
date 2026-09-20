@@ -1293,25 +1293,15 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                     return@checkManageMediaOrHandleSAFDialogSdk30
                 }
 
-                mIgnoredPaths.add(fileDirItem.path)
-                val media = mMediaFiles.filter { !mIgnoredPaths.contains(it.path) } as ArrayList<Medium>
-                if (media.isNotEmpty()) {
-                    runOnUiThread {
-                        refreshUI(media, false)
-                    }
-                }
-
-                if (media.size == 1) {
-                    onPageSelected(0)
-                }
-
                 movePathsInRecycleBin(arrayListOf(path)) {
                     if (it) {
+                        // The copy into the recycle bin succeeded. Remove the item from
+                        // the pager before deleting the source so the current fragment
+                        // never turns into a missing-file screen.
+                        removeDeletedMedium(path)
                         tryDeleteFileDirItem(fileDirItem, false, false) {
-                            mIgnoredPaths.remove(fileDirItem.path)
-                            if (media.isEmpty()) {
-                                deleteDirectoryIfEmpty()
-                                finish()
+                            if (!it) {
+                                toast(org.fossify.commons.R.string.unknown_error_occurred)
                             }
                         }
                     } else {
@@ -1330,25 +1320,35 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 return@checkManageMediaOrHandleSAFDialogSdk30
             }
 
-            mIgnoredPaths.add(fileDirItem.path)
-            val media = mMediaFiles.filter { !mIgnoredPaths.contains(it.path) } as ArrayList<Medium>
-            if (media.isNotEmpty()) {
-                runOnUiThread {
-                    refreshUI(media, false)
-                }
-            }
-
-            if (media.size == 1) {
-                onPageSelected(0)
-            }
-
             tryDeleteFileDirItem(fileDirItem, false, true) {
-                mIgnoredPaths.remove(fileDirItem.path)
-                if (media.isEmpty()) {
-                    deleteDirectoryIfEmpty()
-                    finish()
+                if (it) {
+                    removeDeletedMedium(fileDirItem.path)
+                } else {
+                    toast(org.fossify.commons.R.string.unknown_error_occurred)
                 }
             }
+        }
+    }
+
+    private fun removeDeletedMedium(path: String) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) {
+                return@runOnUiThread
+            }
+
+            mIgnoredPaths.add(path)
+            val remainingMedia = mMediaFiles
+                .filterNot { it.path == path }
+                .toCollection(ArrayList())
+            mMediaFiles = remainingMedia
+            if (remainingMedia.isEmpty()) {
+                deleteDirectoryIfEmpty()
+                finish()
+                return@runOnUiThread
+            }
+
+            mPos = binding.viewPager.currentItem.coerceAtMost(remainingMedia.lastIndex)
+            refreshUI(remainingMedia, false)
         }
     }
 
