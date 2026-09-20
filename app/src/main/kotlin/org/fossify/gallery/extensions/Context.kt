@@ -534,7 +534,7 @@ fun Context.rescanFolderMedia(path: String) {
 }
 
 fun Context.rescanFolderMediaSync(path: String) {
-    getCachedMedia(path) { _ ->
+    getCachedMedia(path, callback = { _ ->
         GetMediaAsynctask(
             context = applicationContext,
             mPath = path,
@@ -550,7 +550,7 @@ fun Context.rescanFolderMediaSync(path: String) {
                 }
             }
         }.execute()
-    }
+    })
 }
 
 fun Context.storeDirectoryItems(items: ArrayList<Directory>) {

@@ -474,7 +474,7 @@ fun BaseSimpleActivity.restoreRecycleBinPaths(paths: ArrayList<String>, callback
             if (handleSAFDialog(destination, continueAfterPermission)) {
                 return@ensureBackgroundThread
             }
-            if (handleSAFDialogSdk30(destination, continueAfterPermission)) {
+            if (handleSAFDialogSdk30(destination, false, continueAfterPermission)) {
                 return@ensureBackgroundThread
             }
 

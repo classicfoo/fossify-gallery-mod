@@ -493,7 +493,7 @@ class MediaAdapter(
             (item as? Medium)?.path?.takeIf { it in pathSet }?.let { position }
         }.sortedDescending().toCollection(ArrayList())
         media.removeAll { (it as? Medium)?.path in pathSet }
-        updateMediaGridDecoration(media)
+        listener?.updateMediaGridDecoration(media)
         if (positions.isEmpty()) {
             finishActMode()
         } else {
@@ -507,7 +507,7 @@ class MediaAdapter(
                     listener?.refreshItems()
                 } else {
                     updateMedia(originalMedia, forceAdapterRefresh = true)
-                    updateMediaGridDecoration(media)
+                    listener?.updateMediaGridDecoration(media)
                     listener?.refreshItems()
                 }
             }
