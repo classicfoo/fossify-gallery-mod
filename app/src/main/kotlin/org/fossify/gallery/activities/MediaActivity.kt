@@ -569,7 +569,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 isAGetIntent = mIsGetImageIntent || mIsGetVideoIntent || mIsGetAnyIntent,
                 allowMultiplePicks = mAllowPickingMultiple,
                 path = mPath,
-                recyclerView = binding.mediaGrid
+                mediaRecyclerView = binding.mediaGrid
             ) {
                 if (it is Medium && !isFinishing) {
                     itemClicked(it.path)

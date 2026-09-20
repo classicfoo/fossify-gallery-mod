@@ -702,7 +702,12 @@ class MediaAdapter(
         for (position in first..last) {
             val medium = media.getOrNull(position) as? Medium ?: continue
             val view = layoutManager.findViewByPosition(position) ?: continue
-            return ScrollAnchor(medium.path, layoutManager.getDecoratedStart(view))
+            val offset = if (layoutManager.orientation == RecyclerView.VERTICAL) {
+                layoutManager.getDecoratedTop(view)
+            } else {
+                layoutManager.getDecoratedLeft(view)
+            }
+            return ScrollAnchor(medium.path, offset)
         }
         return null
     }
