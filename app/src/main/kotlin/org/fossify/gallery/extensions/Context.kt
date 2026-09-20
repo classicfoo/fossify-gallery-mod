@@ -686,7 +686,8 @@ fun Context.loadImageBase(
     val options = RequestOptions()
         .signature(signature)
         .skipMemoryCache(skipMemoryCacheAtPaths?.contains(path) == true)
-        .priority(Priority.LOW)
+        // Visible RecyclerView cells should be decoded ahead of off-screen work.
+        .priority(Priority.HIGH)
         .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
         .format(DecodeFormat.PREFER_ARGB_8888)
 
@@ -931,27 +932,6 @@ fun Context.getCachedDirectories(
             directories.removeAll { it.isRecycleBin() }
         }
 
-        val currentMediaFolders = MediaFetcher(this).getCurrentMediaFolderPaths(
-            isPickImage = getImagesOnly,
-            isPickVideo = getVideosOnly,
-            forceShowHidden = forceShowHidden
-        )
-        val temporaryFolderPath = config.tempFolderPath
-        val invalidDirectoryPaths = directories.filter { directory ->
-            when {
-                directory.areFavorites() || directory.isRecycleBin() || directory.path == temporaryFolderPath -> false
-                else -> hasCurrentMediaInCachedDirectory(
-                    path = directory.path,
-                    currentMediaFolders = currentMediaFolders,
-                    getVideosOnly = getVideosOnly,
-                    getImagesOnly = getImagesOnly,
-                    forceShowHidden = forceShowHidden
-                ) == false
-            }
-        }.mapTo(HashSet()) { it.path.lowercase(Locale.getDefault()) }
-
-        directories.removeAll { invalidDirectoryPaths.contains(it.path.lowercase(Locale.getDefault())) }
-
         val shouldShowHidden = config.shouldShowHidden || forceShowHidden
         val excludedPaths = if (config.temporarilyShowExcluded || forceShowExcluded) {
             HashSet()
@@ -1016,12 +996,9 @@ fun Context.getCachedDirectories(
         val clone = filteredDirectories.clone() as ArrayList<Directory>
         callback(clone.distinctBy { it.path.getDistinctPath() } as ArrayList<Directory>)
 
-        // Do not block the validated cache callback on database cleanup.
+        // Reconcile missing folders after the cache is visible.
         Thread {
             try {
-                invalidDirectoryPaths.forEach { path ->
-                    directoryDB.deleteDirPath(path)
-                }
                 removeInvalidDBDirectories()
             } catch (ignored: Exception) {
             }

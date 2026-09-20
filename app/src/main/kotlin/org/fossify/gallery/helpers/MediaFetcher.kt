@@ -750,25 +750,14 @@ class MediaFetcher(val context: Context) {
         )
     }
 
-    // Reuse the already reconciled metadata on startup. Querying every cached path through
-    // MediaStore here duplicates the full scan and postpones the first visible thumbnails.
+    // Room already contains the last reconciled snapshot. Do not stat every file before the
+    // first frame; the authoritative MediaStore/filesystem scan repairs the snapshot afterward.
     fun validateStartupCache(media: List<Medium>, favoritePaths: ArrayList<String>): CachedMediaValidation {
-        val valid = ArrayList<Medium>()
-        val invalid = ArrayList<Medium>()
         val favorites = favoritePaths.toHashSet()
-        media.distinctBy { it.path }.forEach { cached ->
-            val current = if (context.isPathOnOTG(cached.path)) {
-                getMediumFromFile(cached.path, favoritePaths, cached)
-            } else {
-                val file = File(cached.path)
-                val size = file.length()
-                if (size > 0L && file.isFile) {
-                    cached.copy(size = size, isFavorite = cached.path in favorites)
-                } else null
-            }
-            if (current == null) invalid.add(cached) else valid.add(current)
-        }
-        return CachedMediaValidation(valid, invalid)
+        val valid = media.distinctBy { it.path }
+            .filter { it.size > 0L }
+            .mapTo(ArrayList()) { it.copy(isFavorite = it.path in favorites) }
+        return CachedMediaValidation(valid, ArrayList())
     }
 
     fun validateCachedMedia(media: List<Medium>, favoritePaths: ArrayList<String>): CachedMediaValidation {

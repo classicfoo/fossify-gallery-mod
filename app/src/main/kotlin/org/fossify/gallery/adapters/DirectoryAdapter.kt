@@ -13,6 +13,7 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.RelativeLayout
 import androidx.appcompat.content.res.AppCompatResources
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -813,13 +814,20 @@ class DirectoryAdapter(
 
     fun updateDirs(newDirs: ArrayList<Directory>) {
         val directories = newDirs.clone() as ArrayList<Directory>
-        if (directories.hashCode() != currentDirectoriesHash) {
-            currentDirectoriesHash = directories.hashCode()
-            dirs = directories
-            fillLockedFolders()
-            notifyDataSetChanged()
-            finishActMode()
-        }
+        val oldDirs = dirs
+        val changes = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize() = oldDirs.size
+            override fun getNewListSize() = directories.size
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int) =
+                oldDirs[oldItemPosition].path == directories[newItemPosition].path
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int) =
+                oldDirs[oldItemPosition] == directories[newItemPosition]
+        }, false)
+        currentDirectoriesHash = directories.hashCode()
+        dirs = directories
+        fillLockedFolders()
+        changes.dispatchUpdatesTo(this)
     }
 
     fun updateAnimateGifs(animateGifs: Boolean) {
