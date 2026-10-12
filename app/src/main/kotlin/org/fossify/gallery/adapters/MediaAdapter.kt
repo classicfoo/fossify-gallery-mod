@@ -493,7 +493,11 @@ class MediaAdapter(
         }
     }
 
-    private fun toggleFavorite(medium: Medium) {
+    fun toggleFavoriteFromThumbnail(medium: Medium) {
+        if (isAGetIntent || medium.getIsInRecycleBin()) {
+            return
+        }
+
         val pathKey = medium.path.lowercase(Locale.getDefault())
         if (!pendingFavoriteUpdates.add(pathKey)) {
             return
@@ -940,23 +944,7 @@ class MediaAdapter(
 
             mediaItemHolder.setPadding(padding, padding, padding, padding)
 
-            val canToggleFavorite = !isAGetIntent && selectedKeys.isEmpty() &&
-                !medium.getIsInRecycleBin() &&
-                medium.path.lowercase(Locale.getDefault()) !in pendingFavoriteUpdates
-            favorite.apply {
-                val showFavorite = medium.isFavorite && config.markFavoriteItems
-                visibility = if (isAGetIntent || medium.getIsInRecycleBin()) {
-                    if (showFavorite) View.VISIBLE else View.GONE
-                } else {
-                    View.VISIBLE
-                }
-                alpha = if (showFavorite || isAGetIntent || medium.getIsInRecycleBin()) 1f else 0f
-                contentDescription = activity.getString(R.string.toggle_favorite)
-                isClickable = canToggleFavorite
-                setOnClickListener(
-                    if (canToggleFavorite) View.OnClickListener { toggleFavorite(medium) } else null
-                )
-            }
+            favorite.beVisibleIf(medium.isFavorite && config.markFavoriteItems)
 
             playPortraitOutline?.beVisibleIf(medium.isVideo() || medium.isPortrait())
             if (medium.isVideo()) {

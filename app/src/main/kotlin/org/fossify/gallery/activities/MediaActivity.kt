@@ -142,6 +142,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private var mStartAtNewestOnFirstLoad = false
     private var mInitialPositionApplied = false
     private var mLastSearchedText = ""
+    private var mFavoriteTapModeEnabled = false
     private var mLatestMediaId = 0L
     private var mLatestMediaDateId = 0L
     private var mLastMediaHandler = Handler()
@@ -421,7 +422,31 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
             val viewType = config.getFolderViewType(if (mShowAll) SHOW_ALL else mPath)
             findItem(R.id.column_count).isVisible = viewType == VIEW_TYPE_GRID
             findItem(R.id.toggle_filename).isVisible = viewType == VIEW_TYPE_GRID
+
+            val canUseFavoriteTapMode = canUseFavoriteTapMode()
+            if (!canUseFavoriteTapMode) {
+                mFavoriteTapModeEnabled = false
+            }
+            findItem(R.id.toggle_favorite_mode).apply {
+                isVisible = canUseFavoriteTapMode
+                isCheckable = true
+                isChecked = mFavoriteTapModeEnabled
+                setIcon(
+                    if (mFavoriteTapModeEnabled) org.fossify.commons.R.drawable.ic_star_vector
+                    else org.fossify.commons.R.drawable.ic_star_outline_vector
+                )
+                setTitle(
+                    if (mFavoriteTapModeEnabled) R.string.favorite_tap_mode_on
+                    else R.string.favorite_tap_mode_off
+                )
+            }
         }
+    }
+
+    private fun canUseFavoriteTapMode(): Boolean {
+        val viewType = config.getFolderViewType(if (mShowAll) SHOW_ALL else mPath)
+        return viewType == VIEW_TYPE_GRID && mPath != RECYCLE_BIN && config.markFavoriteItems &&
+            !mIsGetImageIntent && !mIsGetVideoIntent && !mIsGetAnyIntent && !isSetWallpaperIntent()
     }
 
     private fun setupOptionsMenu() {
@@ -443,6 +468,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 R.id.empty_disable_recycle_bin -> emptyAndDisableRecycleBin()
                 R.id.restore_all_files -> restoreAllFiles()
                 R.id.toggle_filename -> toggleFilenameVisibility()
+                R.id.toggle_favorite_mode -> toggleFavoriteTapMode()
                 R.id.open_camera -> launchCamera()
                 R.id.folder_view -> switchToFolderView()
                 R.id.change_view_type -> changeViewType()
@@ -579,7 +605,11 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 mediaRecyclerView = binding.mediaGrid
             ) {
                 if (it is Medium && !isFinishing) {
-                    itemClicked(it.path)
+                    if (mFavoriteTapModeEnabled && canUseFavoriteTapMode()) {
+                        getMediaAdapter()?.toggleFavoriteFromThumbnail(it)
+                    } else {
+                        itemClicked(it.path)
+                    }
                 }
             }.apply {
                 setupZoomListener(mZoomListener)
@@ -696,6 +726,21 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
     private fun toggleFilenameVisibility() {
         config.displayFileNames = !config.displayFileNames
         getMediaAdapter()?.updateDisplayFilenames(config.displayFileNames)
+    }
+
+    private fun toggleFavoriteTapMode() {
+        if (!canUseFavoriteTapMode()) {
+            mFavoriteTapModeEnabled = false
+            refreshMenuItems()
+            return
+        }
+
+        mFavoriteTapModeEnabled = !mFavoriteTapModeEnabled
+        refreshMenuItems()
+        toast(
+            if (mFavoriteTapModeEnabled) R.string.favorite_tap_mode_enabled_message
+            else R.string.favorite_tap_mode_disabled_message
+        )
     }
 
     private fun switchToFolderView() {

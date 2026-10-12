@@ -4,10 +4,16 @@
     xmlns:tools="http://schemas.android.com/tools"
     tools:ignore="AppCompatResource">
     <item
+        android:id="@+id/toggle_favorite_mode"
+        android:checkable="true"
+        android:icon="@drawable/ic_star_outline_vector"
+        android:title="@string/favorite_tap_mode_off"
+        app:showAsAction="always" />
+    <item
         android:id="@+id/toggle_filename"
         android:icon="@drawable/ic_label_vector"
         android:title="@string/toggle_filename"
-        app:showAsAction="always" />
+        app:showAsAction="never" />
     <item
         android:id="@+id/folder_view"
         android:icon="@drawable/ic_folders_vector"
