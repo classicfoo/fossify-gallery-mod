@@ -1124,10 +1124,8 @@ private fun Context.getCachedMediaInternal(
                     if (invalidMedium.path.startsWith(recycleBinPath)) {
                         deleteDBPath(invalidMedium.path)
                     } else {
+                        // A failed cache check does not mean the user removed this favorite.
                         MediaSnapshotCoordinator.remove(applicationContext, arrayListOf(invalidMedium.path))
-                        if (invalidMedium.isFavorite) {
-                            favoritesDB.deleteFavoritePath(invalidMedium.path)
-                        }
                     }
                 }
 
@@ -1196,7 +1194,19 @@ fun Context.getOTGFolderChildrenNames(path: String): MutableList<String?>? {
 
 fun Context.getFavoritePaths(): ArrayList<String> {
     return try {
-        favoritesDB.getValidFavoritePaths() as ArrayList<String>
+        val pathsByKey = LinkedHashMap<String, String>()
+        favoritesDB.getValidFavoritePaths().forEach {
+            pathsByKey[it.lowercase(Locale.getDefault())] = it
+        }
+        favoritesDB.getOrphanedFavoritePaths()
+            .filter { getDoesFilePathExist(it, config.OTGPath) }
+            .forEach {
+                val pathKey = it.lowercase(Locale.getDefault())
+                if (pathKey !in pathsByKey) {
+                    pathsByKey[pathKey] = it
+                }
+            }
+        ArrayList(pathsByKey.values)
     } catch (e: Exception) {
         ArrayList()
     }

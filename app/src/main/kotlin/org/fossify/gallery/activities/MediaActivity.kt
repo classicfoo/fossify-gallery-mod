@@ -72,7 +72,6 @@ import org.fossify.gallery.extensions.deleteDBPath
 import org.fossify.gallery.extensions.directoryDB
 import org.fossify.gallery.extensions.emptyAndDisableTheRecycleBin
 import org.fossify.gallery.extensions.emptyTheRecycleBin
-import org.fossify.gallery.extensions.favoritesDB
 import org.fossify.gallery.extensions.getCachedMedia
 import org.fossify.gallery.extensions.getFavoritePaths
 import org.fossify.gallery.extensions.getHumanizedFilename
@@ -782,10 +781,9 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                         .mapNotNull { it as? Medium }
                         .filter { !newPaths.contains(it.path) }
                         .forEach {
-                            if (mPath == FAVORITES && getDoesFilePathExist(it.path)) {
-                                favoritesDB.deleteFavoritePath(it.path)
-                                mediaDB.updateFavorite(it.path, false)
-                            } else {
+                            // A filtered Favorites scan can omit a photo that still exists.
+                            // Keep its cached favorite state so it returns when filters change.
+                            if (mPath != FAVORITES || !getDoesFilePathExist(it.path)) {
                                 mediaDB.deleteMediumPath(it.path)
                             }
                         }
