@@ -301,9 +301,16 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
         binding.mediaEmptyTextPlaceholder2.setTextColor(getProperPrimaryColor())
         binding.mediaEmptyTextPlaceholder2.bringToFront()
 
-        // do not refresh Random sorted files after opening a fullscreen image and going Back
+        val returnedFromFullscreen = mWasFullscreenViewOpen
+        if (returnedFromFullscreen) {
+            // The viewer shares Medium instances with this grid, so DiffUtil may see no
+            // content change even though the already-bound thumbnail still needs rebinding.
+            getMediaAdapter()?.notifyDataSetChanged()
+        }
+
+        // Keep Random sorted files in place when returning from a fullscreen image.
         val isRandomSorting = config.getFolderSorting(mPath) and SORT_BY_RANDOM != 0
-        if (mMedia.isEmpty() || !isRandomSorting || (isRandomSorting && !mWasFullscreenViewOpen)) {
+        if (mMedia.isEmpty() || !isRandomSorting || !returnedFromFullscreen) {
             if (shouldSkipAuthentication()) {
                 tryLoadGallery()
             } else {
@@ -316,6 +323,7 @@ class MediaActivity : SimpleActivity(), MediaOperationsListener {
                 }
             }
         }
+        mWasFullscreenViewOpen = false
     }
 
     override fun onPause() {
