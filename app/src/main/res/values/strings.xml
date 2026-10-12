@@ -257,6 +257,8 @@
     <!-- Bottom actions -->
     <string name="manage_bottom_actions">Manage visible bottom actions</string>
     <string name="toggle_favorite">Toggle favorite</string>
+    <string name="starred_photos_cannot_be_deleted">Starred photos can’t be deleted. Remove their stars first.</string>
+    <string name="starred_photos_will_be_kept">Starred photos will be kept.</string>
     <string name="toggle_file_visibility">Toggle file visibility</string>
 
     <!-- Errors -->

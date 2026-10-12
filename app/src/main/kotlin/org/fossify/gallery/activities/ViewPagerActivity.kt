@@ -298,7 +298,8 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
                 findItem(R.id.menu_show_on_map).isVisible = visibleBottomActions and BOTTOM_ACTION_SHOW_ON_MAP == 0
                 findItem(R.id.menu_slideshow).isVisible = visibleBottomActions and BOTTOM_ACTION_SLIDESHOW == 0
                 findItem(R.id.menu_properties).isVisible = visibleBottomActions and BOTTOM_ACTION_PROPERTIES == 0
-                findItem(R.id.menu_delete).isVisible = visibleBottomActions and BOTTOM_ACTION_DELETE == 0
+                findItem(R.id.menu_delete).isVisible =
+                    visibleBottomActions and BOTTOM_ACTION_DELETE == 0 && !currentMedium.isFavorite
                 findItem(R.id.menu_share).isVisible = visibleBottomActions and BOTTOM_ACTION_SHARE == 0
                 findItem(R.id.menu_edit).isVisible = visibleBottomActions and BOTTOM_ACTION_EDIT == 0 && !currentMedium.isSVG()
                 findItem(R.id.menu_rename).isVisible = visibleBottomActions and BOTTOM_ACTION_RENAME == 0 && !currentMedium.getIsInRecycleBin()
@@ -337,6 +338,9 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             if (visibleBottomActions != 0) {
                 updateBottomActionIcons(currentMedium)
             }
+            binding.bottomActions.bottomDelete.beVisibleIf(
+                visibleBottomActions and BOTTOM_ACTION_DELETE != 0 && !currentMedium.isFavorite
+            )
         }
     }
 
@@ -1117,7 +1121,9 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             shareMediumPath(getCurrentPath())
         }
 
-        binding.bottomActions.bottomDelete.beVisibleIf(visibleBottomActions and BOTTOM_ACTION_DELETE != 0)
+        binding.bottomActions.bottomDelete.beVisibleIf(
+            visibleBottomActions and BOTTOM_ACTION_DELETE != 0 && currentMedium?.isFavorite != true
+        )
         binding.bottomActions.bottomDelete.setOnLongClickListener { toast(org.fossify.commons.R.string.delete); true }
         binding.bottomActions.bottomDelete.setOnClickListener {
             checkDeleteConfirmation()
@@ -1329,7 +1335,9 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
     }
 
     private fun checkDeleteConfirmation() {
-        if (getCurrentMedium() == null) {
+        val currentMedium = getCurrentMedium() ?: return
+        if (currentMedium.isFavorite) {
+            toast(R.string.starred_photos_cannot_be_deleted)
             return
         }
 
@@ -1379,8 +1387,12 @@ class ViewPagerActivity : BaseViewerActivity(), ViewPager.OnPageChangeListener, 
             return
         }
 
-        val currentMedium = getCurrentMedium()
-        val path = currentMedium?.path ?: return
+        val currentMedium = getCurrentMedium() ?: return
+        if (currentMedium.isFavorite) {
+            toast(R.string.starred_photos_cannot_be_deleted)
+            return
+        }
+        val path = currentMedium.path
         if (getIsPathDirectory(path) || !path.isMediaFile()) {
             return
         }

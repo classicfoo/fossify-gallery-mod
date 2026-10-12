@@ -126,6 +126,7 @@ class MediaAdapter(
     private var cropThumbnails = config.cropThumbnails
     private var displayFilenames = config.displayFileNames
     private var showFileTypes = config.showThumbnailFileTypes
+    private val pendingFavoriteUpdates = HashSet<String>()
 
     var sorting = config.getFolderSorting(if (config.showAll) SHOW_ALL else path)
     var dateFormat = config.dateFormat
@@ -492,6 +493,41 @@ class MediaAdapter(
         }
     }
 
+    private fun toggleFavorite(medium: Medium) {
+        val pathKey = medium.path.lowercase(Locale.getDefault())
+        if (!pendingFavoriteUpdates.add(pathKey)) {
+            return
+        }
+
+        val oldValue = medium.isFavorite
+        val newValue = !oldValue
+        medium.isFavorite = newValue
+        notifyFavoriteItemChanged(medium)
+
+        ensureBackgroundThread {
+            val wasUpdated = activity.updateFavorite(medium.path, newValue)
+            activity.runOnUiThread {
+                pendingFavoriteUpdates.remove(pathKey)
+                if (wasUpdated) {
+                    MediaSnapshotCoordinator.upsert(activity.applicationContext, arrayListOf(medium))
+                    if (path == FAVORITES && !newValue) {
+                        listener?.refreshItems()
+                    }
+                } else {
+                    medium.isFavorite = oldValue
+                }
+                notifyFavoriteItemChanged(medium)
+            }
+        }
+    }
+
+    private fun notifyFavoriteItemChanged(medium: Medium) {
+        val position = media.indexOfFirst { (it as? Medium)?.path.equals(medium.path, true) }
+        if (position >= 0) {
+            notifyItemChanged(position)
+        }
+    }
+
     private fun restoreFiles() {
         val paths = getSelectedPaths()
         if (paths.size > 1) {
@@ -656,6 +692,17 @@ class MediaAdapter(
     }
 
     private fun checkDeleteConfirmation() {
+        val selectedItems = getSelectedItems()
+        if (selectedItems.isEmpty()) {
+            return
+        }
+        val deletableItems = selectedItems.filterNot { it.isFavorite }
+        val protectedFavoriteCount = selectedItems.size - deletableItems.size
+        if (deletableItems.isEmpty()) {
+            activity.toast(R.string.starred_photos_cannot_be_deleted)
+            return
+        }
+
         activity.handleMediaManagementPrompt {
             val skipRecycleBin = config.skipRecycleBinForUnconfirmedDelete
             if (config.isDeletePasswordProtectionOn) {
@@ -665,14 +712,13 @@ class MediaAdapter(
             } else if (config.tempSkipDeleteConfirmation || config.skipDeleteConfirmation) {
                 deleteFiles(skipRecycleBin)
             } else {
-                askConfirmDelete()
+                askConfirmDelete(ArrayList(deletableItems), protectedFavoriteCount)
             }
         }
     }
 
-    private fun askConfirmDelete() {
-        val itemsCnt = selectedKeys.size
-        val selectedMedia = getSelectedItems()
+    private fun askConfirmDelete(selectedMedia: ArrayList<Medium>, protectedFavoriteCount: Int) {
+        val itemsCnt = selectedMedia.size
         val firstPath = selectedMedia.first().path
         val fileDirItem = selectedMedia.first().toFileDirItem()
         val size = fileDirItem.getProperSize(activity, countHidden = true).formatSize()
@@ -693,7 +739,10 @@ class MediaAdapter(
         val isRecycleBin = firstPath.startsWith(activity.recycleBinPath)
         val baseString =
             if (config.useRecycleBin && !config.tempSkipRecycleBin && !isRecycleBin) org.fossify.commons.R.string.move_to_recycle_bin_confirmation else org.fossify.commons.R.string.deletion_confirmation
-        val question = String.format(resources.getString(baseString), itemsAndSize)
+        var question = String.format(resources.getString(baseString), itemsAndSize)
+        if (protectedFavoriteCount > 0) {
+            question += "\n\n${activity.getString(R.string.starred_photos_will_be_kept)}"
+        }
         val showSkipRecycleBinOption = config.useRecycleBin && !isRecycleBin
 
         DeleteWithRememberDialog(activity, question, showSkipRecycleBinOption) { remember, skipRecycleBin ->
@@ -703,24 +752,34 @@ class MediaAdapter(
                 config.tempSkipRecycleBin = skipRecycleBin
             }
 
-            deleteFiles(skipRecycleBin)
+            deleteFiles(skipRecycleBin, showProtectedNotice = false)
         }
     }
 
-    private fun deleteFiles(skipRecycleBin: Boolean) {
+    private fun deleteFiles(skipRecycleBin: Boolean, showProtectedNotice: Boolean = true) {
         if (selectedKeys.isEmpty()) {
             return
         }
 
-        val selectedItems = getSelectedItems()
+        val allSelectedItems = getSelectedItems()
+        val selectedItems = allSelectedItems.filterNot { it.isFavorite }
+        val protectedFavoriteCount = allSelectedItems.size - selectedItems.size
+        if (selectedItems.isEmpty()) {
+            activity.toast(R.string.starred_photos_cannot_be_deleted)
+            return
+        }
+        if (showProtectedNotice && protectedFavoriteCount > 0) {
+            activity.toast(R.string.starred_photos_will_be_kept)
+        }
+
         val selectedPaths = selectedItems.map { it.path } as ArrayList<String>
-        val SAFPath = selectedPaths.firstOrNull { activity.needsStupidWritePermissions(it) } ?: getFirstSelectedItemPath() ?: return
+        val SAFPath = selectedPaths.firstOrNull { activity.needsStupidWritePermissions(it) } ?: selectedItems.first().path
         activity.handleSAFDialog(SAFPath) {
             if (!it) {
                 return@handleSAFDialog
             }
 
-            val sdk30SAFPath = selectedPaths.firstOrNull { activity.isAccessibleWithSAFSdk30(it) } ?: getFirstSelectedItemPath() ?: return@handleSAFDialog
+            val sdk30SAFPath = selectedPaths.firstOrNull { activity.isAccessibleWithSAFSdk30(it) } ?: selectedItems.first().path
             activity.checkManageMediaOrHandleSAFDialogSdk30(sdk30SAFPath) {
                 if (!it) {
                     return@checkManageMediaOrHandleSAFDialogSdk30
@@ -881,7 +940,23 @@ class MediaAdapter(
 
             mediaItemHolder.setPadding(padding, padding, padding, padding)
 
-            favorite.beVisibleIf(medium.isFavorite && config.markFavoriteItems)
+            val canToggleFavorite = !isAGetIntent && selectedKeys.isEmpty() &&
+                !medium.getIsInRecycleBin() &&
+                medium.path.lowercase(Locale.getDefault()) !in pendingFavoriteUpdates
+            favorite.apply {
+                val showFavorite = medium.isFavorite && config.markFavoriteItems
+                visibility = if (isAGetIntent || medium.getIsInRecycleBin()) {
+                    if (showFavorite) View.VISIBLE else View.GONE
+                } else {
+                    View.VISIBLE
+                }
+                alpha = if (showFavorite || isAGetIntent || medium.getIsInRecycleBin()) 1f else 0f
+                contentDescription = activity.getString(R.string.toggle_favorite)
+                isClickable = canToggleFavorite
+                setOnClickListener(
+                    if (canToggleFavorite) View.OnClickListener { toggleFavorite(medium) } else null
+                )
+            }
 
             playPortraitOutline?.beVisibleIf(medium.isVideo() || medium.isPortrait())
             if (medium.isVideo()) {
